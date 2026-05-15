@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	defaultEndpoint = "https://opencode.ai/zen/go/v1/chat/completions"
-	defaultModel    = "deepseek-v4-flash"
+	defaultEndpoint        = "https://opencode.ai/zen/go/v1/chat/completions"
+	defaultModel           = "deepseek-v4-flash"
+	defaultPersonalityPath = "personality.md"
 )
 
 type message struct {
@@ -37,11 +38,27 @@ type chatResponse struct {
 }
 
 type agent struct {
-	endpoint string
-	model    string
-	apiKey   string
-	history  []message
-	http     *http.Client
+	endpoint    string
+	model       string
+	apiKey      string
+	personality string
+	history     []message
+	http        *http.Client
+}
+
+func loadPersonality() (string, error) {
+	path := os.Getenv("OPENCODE_PERSONALITY")
+	if path == "" {
+		path = defaultPersonalityPath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func newAgent() (*agent, error) {
@@ -57,18 +74,28 @@ func newAgent() (*agent, error) {
 	if model == "" {
 		model = defaultModel
 	}
+	personality, err := loadPersonality()
+	if err != nil {
+		return nil, fmt.Errorf("leyendo personalidad: %w", err)
+	}
 	return &agent{
-		endpoint: endpoint,
-		model:    model,
-		apiKey:   key,
-		http:     &http.Client{Timeout: 120 * time.Second},
+		endpoint:    endpoint,
+		model:       model,
+		apiKey:      key,
+		personality: personality,
+		http:        &http.Client{Timeout: 120 * time.Second},
 	}, nil
 }
 
 func (a *agent) send(ctx context.Context, userInput string) (string, error) {
 	a.history = append(a.history, message{Role: "user", Content: userInput})
 
-	body, err := json.Marshal(chatRequest{Model: a.model, Messages: a.history})
+	msgs := a.history
+	if a.personality != "" {
+		msgs = append([]message{{Role: "system", Content: a.personality}}, a.history...)
+	}
+
+	body, err := json.Marshal(chatRequest{Model: a.model, Messages: msgs})
 	if err != nil {
 		return "", err
 	}
@@ -117,7 +144,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("aqua · modelo: %s\n", a.model)
+	personalityStatus := "sin personalidad"
+	if a.personality != "" {
+		personalityStatus = fmt.Sprintf("personalidad: %d chars", len(a.personality))
+	}
+	fmt.Printf("aqua · modelo: %s · %s\n", a.model, personalityStatus)
 	fmt.Println("comandos: /exit, /reset")
 	fmt.Println()
 
