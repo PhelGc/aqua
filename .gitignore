@@ -20,5 +20,8 @@ skills/
 # Historial de sesiones (local)
 sessions/
 
+# Documentación interna (manuales, referencias confidenciales)
+docs/
+
 # Go
 vendor/
