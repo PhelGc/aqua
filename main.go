@@ -74,6 +74,7 @@ type agent struct {
 	http        *http.Client
 	mcp         *mcpManager
 	skills      *skillRegistry
+	sessions    *sessionManager
 }
 
 func loadPersonality() (string, error) {
@@ -120,14 +121,24 @@ func newAgent(ctx context.Context) (*agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cargando skills: %w", err)
 	}
+	sessions, err := newSessionManager()
+	if err != nil {
+		return nil, fmt.Errorf("iniciando sesiones: %w", err)
+	}
+	history, err := sessions.load(sessions.current())
+	if err != nil {
+		return nil, fmt.Errorf("cargando sesión %q: %w", sessions.current(), err)
+	}
 	return &agent{
 		endpoint:    endpoint,
 		model:       model,
 		apiKey:      key,
 		personality: personality,
+		history:     history,
 		http:        &http.Client{Timeout: 120 * time.Second},
 		mcp:         manager,
 		skills:      skills,
+		sessions:    sessions,
 	}, nil
 }
 
@@ -190,6 +201,9 @@ func (a *agent) send(ctx context.Context, userInput string) (string, error) {
 		a.history = append(a.history, *reply)
 
 		if len(reply.ToolCalls) == 0 {
+			if err := a.sessions.save(a.sessions.current(), a.history); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", err)
+			}
 			return reply.Content, nil
 		}
 
@@ -238,8 +252,9 @@ func main() {
 	if n := len(a.skills.list()); n > 0 {
 		skillStatus = fmt.Sprintf("%d skills", n)
 	}
-	fmt.Printf("aqua · modelo: %s · %s · %s · %s\n", a.model, personalityStatus, toolStatus, skillStatus)
-	fmt.Println("comandos: /exit, /reset, /tools, /skills, /<skill> [args]")
+	fmt.Printf("aqua · modelo: %s · %s · %s · %s · sesión: %s (%d mensajes)\n",
+		a.model, personalityStatus, toolStatus, skillStatus, a.sessions.current(), len(a.history))
+	fmt.Println("comandos: /exit, /reset, /tools, /skills, /sessions, /<skill> [args]")
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -263,7 +278,13 @@ func main() {
 				return
 			case "reset":
 				a.history = nil
+				if err := a.sessions.save(a.sessions.current(), a.history); err != nil {
+					fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", err)
+				}
 				fmt.Println("(historial limpio)")
+				continue
+			case "sessions":
+				handleSessions(a, args)
 				continue
 			case "tools":
 				tools := a.mcp.tools()
@@ -308,5 +329,77 @@ func main() {
 		}
 		fmt.Println(reply)
 		fmt.Println()
+	}
+}
+
+func handleSessions(a *agent, args string) {
+	sub, rest, _ := strings.Cut(args, " ")
+	rest = strings.TrimSpace(rest)
+	switch sub {
+	case "":
+		names, err := a.sessions.list()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error listando sesiones:", err)
+			return
+		}
+		if len(names) == 0 {
+			fmt.Printf("(sin sesiones guardadas; actual: %s)\n", a.sessions.current())
+			return
+		}
+		for _, n := range names {
+			marker := "  "
+			if n == a.sessions.current() {
+				marker = "* "
+			}
+			fmt.Printf("%s%s\n", marker, n)
+		}
+	case "new":
+		if rest == "" {
+			fmt.Fprintln(os.Stderr, "uso: /sessions new <nombre>")
+			return
+		}
+		if err := a.sessions.save(a.sessions.current(), a.history); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión actual:", err)
+		}
+		if err := a.sessions.switchTo(rest); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return
+		}
+		a.history = nil
+		if err := a.sessions.save(rest, a.history); err != nil {
+			fmt.Fprintln(os.Stderr, "warning:", err)
+		}
+		fmt.Printf("(sesión actual: %s)\n", rest)
+	case "load":
+		if rest == "" {
+			fmt.Fprintln(os.Stderr, "uso: /sessions load <nombre>")
+			return
+		}
+		if err := a.sessions.save(a.sessions.current(), a.history); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión actual:", err)
+		}
+		history, err := a.sessions.load(rest)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return
+		}
+		if err := a.sessions.switchTo(rest); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return
+		}
+		a.history = history
+		fmt.Printf("(sesión actual: %s · %d mensajes)\n", rest, len(history))
+	case "delete":
+		if rest == "" {
+			fmt.Fprintln(os.Stderr, "uso: /sessions delete <nombre>")
+			return
+		}
+		if err := a.sessions.delete(rest); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return
+		}
+		fmt.Printf("(borrada: %s)\n", rest)
+	default:
+		fmt.Fprintf(os.Stderr, "subcomando desconocido: %s\nuso: /sessions [new|load|delete] <nombre>\n", sub)
 	}
 }

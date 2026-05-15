@@ -17,5 +17,8 @@ aqua
 # Skills (locales del usuario)
 skills/
 
+# Historial de sesiones (local)
+sessions/
+
 # Go
 vendor/
