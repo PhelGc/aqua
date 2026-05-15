@@ -1,0 +1,18 @@
+# Binarios
+*.exe
+aqua
+
+# Secretos / entorno
+.env
+.env.local
+*.key
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code (local)
+.claude/settings.local.json
+
+# Go
+vendor/
