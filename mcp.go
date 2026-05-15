@@ -67,7 +67,7 @@ func newMCPManager(ctx context.Context, cfg *mcpConfig) (*mcpManager, error) {
 		if len(spec.Env) > 0 {
 			env := os.Environ()
 			for k, v := range spec.Env {
-				env = append(env, k+"="+v)
+				env = append(env, k+"="+os.ExpandEnv(v))
 			}
 			cmd.Env = env
 		}

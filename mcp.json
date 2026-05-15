@@ -3,6 +3,15 @@
     "fs": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "@aashari/mcp-server-atlassian-jira"],
+      "env": {
+        "ATLASSIAN_SITE_NAME": "${ATLASSIAN_SITE_NAME}",
+        "ATLASSIAN_USER_EMAIL": "${ATLASSIAN_USER_EMAIL}",
+        "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
+      }
     }
   }
 }
