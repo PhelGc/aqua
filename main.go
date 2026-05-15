@@ -254,7 +254,7 @@ func main() {
 	}
 	fmt.Printf("aqua · modelo: %s · %s · %s · %s · sesión: %s (%d mensajes)\n",
 		a.model, personalityStatus, toolStatus, skillStatus, a.sessions.current(), len(a.history))
-	fmt.Println("comandos: /exit, /reset, /tools, /skills, /sessions, /<skill> [args]")
+	fmt.Println("comandos: /exit, /reset, /tools, /skills [reload], /sessions, /<skill> [args]")
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -297,6 +297,16 @@ func main() {
 				}
 				continue
 			case "skills":
+				if args == "reload" {
+					reloaded, err := loadSkills()
+					if err != nil {
+						fmt.Fprintln(os.Stderr, "error recargando skills:", err)
+						continue
+					}
+					a.skills = reloaded
+					fmt.Printf("(recargadas %d skills)\n", len(reloaded.list()))
+					continue
+				}
 				skills := a.skills.list()
 				if len(skills) == 0 {
 					fmt.Println("(sin skills cargadas)")
