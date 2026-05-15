@@ -73,6 +73,7 @@ type agent struct {
 	history     []message
 	http        *http.Client
 	mcp         *mcpManager
+	skills      *skillRegistry
 }
 
 func loadPersonality() (string, error) {
@@ -115,6 +116,10 @@ func newAgent(ctx context.Context) (*agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("iniciando MCP: %w", err)
 	}
+	skills, err := loadSkills()
+	if err != nil {
+		return nil, fmt.Errorf("cargando skills: %w", err)
+	}
 	return &agent{
 		endpoint:    endpoint,
 		model:       model,
@@ -122,6 +127,7 @@ func newAgent(ctx context.Context) (*agent, error) {
 		personality: personality,
 		http:        &http.Client{Timeout: 120 * time.Second},
 		mcp:         manager,
+		skills:      skills,
 	}, nil
 }
 
@@ -228,8 +234,12 @@ func main() {
 	if n := len(a.mcp.tools()); n > 0 {
 		toolStatus = fmt.Sprintf("%d tools de %d servidores MCP", n, len(a.mcp.sessions))
 	}
-	fmt.Printf("aqua · modelo: %s · %s · %s\n", a.model, personalityStatus, toolStatus)
-	fmt.Println("comandos: /exit, /reset, /tools")
+	skillStatus := "sin skills"
+	if n := len(a.skills.list()); n > 0 {
+		skillStatus = fmt.Sprintf("%d skills", n)
+	}
+	fmt.Printf("aqua · modelo: %s · %s · %s · %s\n", a.model, personalityStatus, toolStatus, skillStatus)
+	fmt.Println("comandos: /exit, /reset, /tools, /skills, /<skill> [args]")
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -244,23 +254,49 @@ func main() {
 		if input == "" {
 			continue
 		}
-		switch input {
-		case "/exit":
-			return
-		case "/reset":
-			a.history = nil
-			fmt.Println("(historial limpio)")
-			continue
-		case "/tools":
-			tools := a.mcp.tools()
-			if len(tools) == 0 {
-				fmt.Println("(sin tools cargadas)")
-			} else {
-				for _, t := range tools {
-					fmt.Printf("- %s: %s\n", t.Function.Name, t.Function.Description)
+
+		if strings.HasPrefix(input, "/") {
+			cmd, args, _ := strings.Cut(input[1:], " ")
+			args = strings.TrimSpace(args)
+			switch cmd {
+			case "exit":
+				return
+			case "reset":
+				a.history = nil
+				fmt.Println("(historial limpio)")
+				continue
+			case "tools":
+				tools := a.mcp.tools()
+				if len(tools) == 0 {
+					fmt.Println("(sin tools cargadas)")
+				} else {
+					for _, t := range tools {
+						fmt.Printf("- %s: %s\n", t.Function.Name, t.Function.Description)
+					}
 				}
+				continue
+			case "skills":
+				skills := a.skills.list()
+				if len(skills) == 0 {
+					fmt.Println("(sin skills cargadas)")
+				} else {
+					for _, s := range skills {
+						desc := s.description
+						if desc == "" {
+							desc = "(sin descripción)"
+						}
+						fmt.Printf("- /%s: %s\n", s.name, desc)
+					}
+				}
+				continue
+			default:
+				rendered, ok := a.skills.render(cmd, args)
+				if !ok {
+					fmt.Fprintf(os.Stderr, "comando desconocido: /%s\n", cmd)
+					continue
+				}
+				input = rendered
 			}
-			continue
 		}
 
 		reqCtx, reqCancel := context.WithTimeout(ctx, 5*time.Minute)

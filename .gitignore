@@ -14,5 +14,8 @@ aqua
 # Claude Code (local)
 .claude/settings.local.json
 
+# Skills (locales del usuario)
+skills/
+
 # Go
 vendor/
