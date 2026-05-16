@@ -32,8 +32,10 @@ type PoolOptions struct {
 	MaxRetries    int
 	BackoffBase   time.Duration
 	PerJobTimeout time.Duration
-	OnProgress    func(done, total int)
-	Execute       ExecuteFunc
+	// OnProgress se llama después de cada job terminado (éxito o fallo).
+	// Recibe el contador, el total, y el Result del job recién completado.
+	OnProgress func(done, total int, r Result)
+	Execute    ExecuteFunc
 }
 
 func (o *PoolOptions) applyDefaults() {
@@ -90,7 +92,7 @@ func (a *agent) runPool(ctx context.Context, jobs []Job, opts PoolOptions) []Res
 					done++
 					d := done
 					doneMu.Unlock()
-					opts.OnProgress(d, len(jobs))
+					opts.OnProgress(d, len(jobs), results[ij.idx])
 				}
 			}
 		}()
@@ -149,7 +151,8 @@ func runJob(ctx context.Context, j Job, opts PoolOptions, exec ExecuteFunc) Resu
 }
 
 // runIsolated procesa un Job en un worker: agente con history limpia que reusa
-// http y mcp del agente principal. No tiene skills ni sessions.
+// http y mcp del agente principal. No tiene skills ni sessions. El label del
+// worker es el JobID para que los tool-calls en los logs se identifiquen.
 func (a *agent) runIsolated(ctx context.Context, j Job) (string, error) {
 	worker := &agent{
 		endpoint:    a.endpoint,
@@ -158,6 +161,7 @@ func (a *agent) runIsolated(ctx context.Context, j Job) (string, error) {
 		personality: a.personality,
 		http:        a.http,
 		mcp:         a.mcp,
+		label:       j.ID(),
 	}
 	for _, sys := range j.System() {
 		worker.history = append(worker.history, message{Role: "system", Content: sys})

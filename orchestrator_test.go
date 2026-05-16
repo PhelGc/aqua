@@ -185,7 +185,7 @@ func TestRunPool_ProgressCallback(t *testing.T) {
 	var mu sync.Mutex
 	opts := PoolOptions{
 		Size: 2,
-		OnProgress: func(done, total int) {
+		OnProgress: func(done, total int, r Result) {
 			atomic.AddInt32(&calls, 1)
 			mu.Lock()
 			lastDone = int32(done)
