@@ -20,6 +20,9 @@ skills/
 # Historial de sesiones (local)
 sessions/
 
+# Reportes generados por el orquestador
+reports/
+
 # Documentación interna (manuales, referencias confidenciales)
 docs/
 

@@ -5,19 +5,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+var errMaxToolIterations = errors.New("max tool iterations exceeded")
 
 const (
 	defaultEndpoint        = "https://opencode.ai/zen/go/v1/chat/completions"
 	defaultModel           = "deepseek-v4-flash"
 	defaultPersonalityPath = "personality.md"
-	maxToolIterations      = 8
+	defaultMaxToolIters    = 16
 )
 
 type message struct {
@@ -76,6 +80,9 @@ type agent struct {
 	mcp         *mcpManager
 	skills      *skillRegistry
 	sessions    *sessionManager
+	// label identifica al agente en los logs de tool-call. Vacío = agente
+	// principal (sale como [tool]); con valor sale como [tool/<label>].
+	label string
 }
 
 func loadPersonality() (string, error) {
@@ -187,7 +194,78 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 	checkpoint := len(*history)
 	*history = append(*history, message{Role: "user", Content: userInput})
 
-	for i := 0; i < maxToolIterations; i++ {
+	reply, err := a.runConversation(ctx, history)
+	if err != nil {
+		if !errors.Is(err, errMaxToolIterations) {
+			*history = (*history)[:checkpoint]
+		}
+		return "", err
+	}
+	if a.sessions != nil && sessionName != "" {
+		if saveErr := a.sessions.save(sessionName, *history); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", saveErr)
+		}
+	}
+	return reply, nil
+}
+
+// sendAndDispatch wraps send() para detectar un marker <orchestrate> en la
+// respuesta del LLM. Si lo encuentra, despacha al adaptador correspondiente y
+// devuelve (texto-consolidado, path-del-artifact). Si no, devuelve (reply, "").
+// Cuando dispatcha, el último mensaje del assistant en *history se reemplaza
+// por el texto consolidado para que el LLM no vuelva a ver su propio marker.
+func (a *agent) sendAndDispatch(ctx context.Context, history *[]message, sessionName, userInput string) (text, artifact string, err error) {
+	reply, err := a.send(ctx, history, sessionName, userInput)
+	if err != nil {
+		return "", "", err
+	}
+	m, prose, ok := parseOrchestrate(reply)
+	if !ok {
+		return reply, "", nil
+	}
+	path, summary, derr := a.dispatchOrchestrate(ctx, m)
+	if derr != nil {
+		fail := strings.TrimSpace(prose) + "\n\n(error orquestando: " + derr.Error() + ")"
+		return fail, "", derr
+	}
+	consolidated := strings.TrimSpace(prose)
+	if consolidated == "" {
+		consolidated = summary
+	} else {
+		consolidated = consolidated + "\n\n" + summary
+	}
+	for i := len(*history) - 1; i >= 0; i-- {
+		if (*history)[i].Role == "assistant" {
+			(*history)[i].Content = consolidated
+			(*history)[i].ToolCalls = nil
+			break
+		}
+	}
+	if a.sessions != nil && sessionName != "" {
+		if saveErr := a.sessions.save(sessionName, *history); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", saveErr)
+		}
+	}
+	return consolidated, path, nil
+}
+
+// dispatchOrchestrate despacha el marker al adaptador correspondiente según kind.
+// Cada adaptador devuelve (path-del-artifact, summary-texto, err).
+func (a *agent) dispatchOrchestrate(ctx context.Context, m orchestrateMarker) (artifact, summary string, err error) {
+	switch m.Kind {
+	case "report":
+		return a.runReport(ctx, m.Payload)
+	default:
+		return "", "", fmt.Errorf("kind de orchestrate desconocido: %q", m.Kind)
+	}
+}
+
+// runConversation ejecuta el loop de chat hasta que el modelo deja de pedir tools
+// o se alcanza maxToolIters(). Modifica *history (append-only) pero no
+// persiste sesión ni hace rollback. Reusable por workers del orquestador.
+func (a *agent) runConversation(ctx context.Context, history *[]message) (string, error) {
+	limit := maxToolIters()
+	for i := 0; i < limit; i++ {
 		msgs := *history
 		if a.personality != "" {
 			msgs = append([]message{{Role: "system", Content: a.personality}}, *history...)
@@ -195,21 +273,21 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 
 		reply, err := a.callAPI(ctx, msgs)
 		if err != nil {
-			*history = (*history)[:checkpoint]
 			return "", err
 		}
 
 		*history = append(*history, *reply)
 
 		if len(reply.ToolCalls) == 0 {
-			if err := a.sessions.save(sessionName, *history); err != nil {
-				fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", err)
-			}
 			return reply.Content, nil
 		}
 
 		for _, tc := range reply.ToolCalls {
-			fmt.Printf("[tool] %s\n", tc.Function.Name)
+			if a.label != "" {
+				fmt.Printf("[tool/%s] %s\n", a.label, tc.Function.Name)
+			} else {
+				fmt.Printf("[tool] %s\n", tc.Function.Name)
+			}
 			result, callErr := a.mcp.callTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			content := result
 			if callErr != nil {
@@ -227,7 +305,18 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 		}
 	}
 
-	return "", fmt.Errorf("se alcanzó el máximo de iteraciones de tools (%d)", maxToolIterations)
+	return "", fmt.Errorf("se alcanzó el máximo de iteraciones de tools (%d): %w", limit, errMaxToolIterations)
+}
+
+// maxToolIters lee el límite de iteraciones de tool-call por turno.
+// Default: defaultMaxToolIters. Override: env var OPENCODE_MAX_TOOL_ITERS.
+func maxToolIters() int {
+	if v := os.Getenv("OPENCODE_MAX_TOOL_ITERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxToolIters
 }
 
 func main() {
@@ -349,14 +438,17 @@ func runTerminal(ctx context.Context, a *agent) {
 			}
 		}
 
-		reqCtx, reqCancel := context.WithTimeout(ctx, 5*time.Minute)
-		reply, err := a.send(reqCtx, &a.history, a.sessions.current(), input)
+		reqCtx, reqCancel := context.WithTimeout(ctx, 30*time.Minute)
+		reply, artifact, err := a.sendAndDispatch(reqCtx, &a.history, a.sessions.current(), input)
 		reqCancel()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			continue
 		}
 		fmt.Println(reply)
+		if artifact != "" {
+			fmt.Printf("(archivo: %s)\n", artifact)
+		}
 		fmt.Println()
 	}
 }

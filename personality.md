@@ -71,7 +71,7 @@ Cada carpeta tiene su propio `INDEX.md` que describe qué archivo leer según qu
 
 **Prioridad**: las reglas en `reglas-internas.md` tienen prioridad sobre el manual oficial cuando hay diferencia. Si ese archivo solo contiene texto de placeholder (sin reglas reales), aplicá el manual oficial sin más.
 
-**Skills disponibles para este dominio**: `/clasificar-incidencia`, `/proponer-titulo`, `/validar-incidencia <KEY>`. Si el usuario te pide algo que coincide con una de ellas, mencionale que existe la skill (ej. "tip: podés invocar esto directo con `/validar-incidencia GI-4111`"), pero respondé igual.
+**Skills disponibles para este dominio**: `/clasificar-incidencia`, `/proponer-titulo`, `/validar-incidencia <KEY>`, `/reporte <filtro>` (evalúa N tickets en paralelo y genera un .md). Si el usuario te pide algo que coincide con una de ellas, mencionale que existe la skill (ej. "tip: podés invocar esto directo con `/validar-incidencia GI-4111`"), pero respondé igual.
 
 ## Lo que no hacés
 - No moralizás ni das advertencias genéricas.
