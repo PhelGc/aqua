@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,7 +21,7 @@ const (
 	defaultEndpoint        = "https://opencode.ai/zen/go/v1/chat/completions"
 	defaultModel           = "deepseek-v4-flash"
 	defaultPersonalityPath = "personality.md"
-	maxToolIterations      = 8
+	defaultMaxToolIters    = 16
 )
 
 type message struct {
@@ -79,6 +80,9 @@ type agent struct {
 	mcp         *mcpManager
 	skills      *skillRegistry
 	sessions    *sessionManager
+	// label identifica al agente en los logs de tool-call. Vacío = agente
+	// principal (sale como [tool]); con valor sale como [tool/<label>].
+	label string
 }
 
 func loadPersonality() (string, error) {
@@ -257,10 +261,11 @@ func (a *agent) dispatchOrchestrate(ctx context.Context, m orchestrateMarker) (a
 }
 
 // runConversation ejecuta el loop de chat hasta que el modelo deja de pedir tools
-// o se alcanza maxToolIterations. Modifica *history (append-only) pero no
+// o se alcanza maxToolIters(). Modifica *history (append-only) pero no
 // persiste sesión ni hace rollback. Reusable por workers del orquestador.
 func (a *agent) runConversation(ctx context.Context, history *[]message) (string, error) {
-	for i := 0; i < maxToolIterations; i++ {
+	limit := maxToolIters()
+	for i := 0; i < limit; i++ {
 		msgs := *history
 		if a.personality != "" {
 			msgs = append([]message{{Role: "system", Content: a.personality}}, *history...)
@@ -278,7 +283,11 @@ func (a *agent) runConversation(ctx context.Context, history *[]message) (string
 		}
 
 		for _, tc := range reply.ToolCalls {
-			fmt.Printf("[tool] %s\n", tc.Function.Name)
+			if a.label != "" {
+				fmt.Printf("[tool/%s] %s\n", a.label, tc.Function.Name)
+			} else {
+				fmt.Printf("[tool] %s\n", tc.Function.Name)
+			}
 			result, callErr := a.mcp.callTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			content := result
 			if callErr != nil {
@@ -296,7 +305,18 @@ func (a *agent) runConversation(ctx context.Context, history *[]message) (string
 		}
 	}
 
-	return "", fmt.Errorf("se alcanzó el máximo de iteraciones de tools (%d): %w", maxToolIterations, errMaxToolIterations)
+	return "", fmt.Errorf("se alcanzó el máximo de iteraciones de tools (%d): %w", limit, errMaxToolIterations)
+}
+
+// maxToolIters lee el límite de iteraciones de tool-call por turno.
+// Default: defaultMaxToolIters. Override: env var OPENCODE_MAX_TOOL_ITERS.
+func maxToolIters() int {
+	if v := os.Getenv("OPENCODE_MAX_TOOL_ITERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxToolIters
 }
 
 func main() {
