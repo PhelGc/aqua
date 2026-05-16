@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 )
+
+var errMaxToolIterations = errors.New("max tool iterations exceeded")
 
 const (
 	defaultEndpoint        = "https://opencode.ai/zen/go/v1/chat/completions"
@@ -187,6 +190,25 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 	checkpoint := len(*history)
 	*history = append(*history, message{Role: "user", Content: userInput})
 
+	reply, err := a.runConversation(ctx, history)
+	if err != nil {
+		if !errors.Is(err, errMaxToolIterations) {
+			*history = (*history)[:checkpoint]
+		}
+		return "", err
+	}
+	if a.sessions != nil && sessionName != "" {
+		if saveErr := a.sessions.save(sessionName, *history); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", saveErr)
+		}
+	}
+	return reply, nil
+}
+
+// runConversation ejecuta el loop de chat hasta que el modelo deja de pedir tools
+// o se alcanza maxToolIterations. Modifica *history (append-only) pero no
+// persiste sesión ni hace rollback. Reusable por workers del orquestador.
+func (a *agent) runConversation(ctx context.Context, history *[]message) (string, error) {
 	for i := 0; i < maxToolIterations; i++ {
 		msgs := *history
 		if a.personality != "" {
@@ -195,16 +217,12 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 
 		reply, err := a.callAPI(ctx, msgs)
 		if err != nil {
-			*history = (*history)[:checkpoint]
 			return "", err
 		}
 
 		*history = append(*history, *reply)
 
 		if len(reply.ToolCalls) == 0 {
-			if err := a.sessions.save(sessionName, *history); err != nil {
-				fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", err)
-			}
 			return reply.Content, nil
 		}
 
@@ -227,7 +245,7 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 		}
 	}
 
-	return "", fmt.Errorf("se alcanzó el máximo de iteraciones de tools (%d)", maxToolIterations)
+	return "", fmt.Errorf("se alcanzó el máximo de iteraciones de tools (%d): %w", maxToolIterations, errMaxToolIterations)
 }
 
 func main() {
