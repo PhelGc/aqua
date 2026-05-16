@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	discordMaxMessageLen = 1900
-	discordSessionPrefix = "discord-"
+	discordMaxMessageLen  = 1900
+	discordSessionPrefix  = "discord-"
 	discordRequestTimeout = 5 * time.Minute
+	discordClearPageSize  = 100
+	discordClearMaxPages  = 100
 )
 
 type discordBot struct {
@@ -57,6 +59,14 @@ func runDiscord(ctx context.Context, a *agent) error {
 		busy:       map[string]bool{},
 	}
 	dg.AddHandler(bot.onMessage)
+	dg.AddHandler(bot.onInteraction)
+	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		if err := bot.registerCommands(s); err != nil {
+			fmt.Fprintln(os.Stderr, "discord: error registrando comandos:", err)
+			return
+		}
+		fmt.Printf("discord: comandos registrados (%d skills + 3 builtins)\n", len(a.skills.list()))
+	})
 
 	if err := dg.Open(); err != nil {
 		return fmt.Errorf("conectando a Discord: %w", err)
@@ -71,6 +81,323 @@ func runDiscord(ctx context.Context, a *agent) error {
 
 	<-ctx.Done()
 	return nil
+}
+
+func (b *discordBot) registerCommands(s *discordgo.Session) error {
+	appID := s.State.User.ID
+	guildID := strings.TrimSpace(os.Getenv("DISCORD_REGISTER_GUILD"))
+	cmds := buildDiscordCommands(b.agent)
+	empty := []*discordgo.ApplicationCommand{}
+
+	if guildID != "" {
+		if _, err := s.ApplicationCommandBulkOverwrite(appID, "", empty); err != nil {
+			fmt.Fprintln(os.Stderr, "discord: warning limpiando comandos globales:", err)
+		} else {
+			fmt.Println("discord: comandos globales previos eliminados")
+		}
+	} else {
+		guilds, err := s.UserGuilds(200, "", "", false)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "discord: warning listando guilds:", err)
+		} else {
+			cleared := 0
+			for _, g := range guilds {
+				if _, err := s.ApplicationCommandBulkOverwrite(appID, g.ID, empty); err != nil {
+					fmt.Fprintf(os.Stderr, "discord: warning limpiando guild %s: %v\n", g.ID, err)
+					continue
+				}
+				cleared++
+			}
+			if cleared > 0 {
+				fmt.Printf("discord: comandos guild-specific previos eliminados en %d server(s)\n", cleared)
+			}
+		}
+	}
+
+	if _, err := s.ApplicationCommandBulkOverwrite(appID, guildID, cmds); err != nil {
+		return err
+	}
+
+	target := "global"
+	if guildID != "" {
+		target = "guild " + guildID
+	}
+	fmt.Printf("discord: %d comandos registrados en %s\n", len(cmds), target)
+	return nil
+}
+
+func buildDiscordCommands(a *agent) []*discordgo.ApplicationCommand {
+	allContexts := []discordgo.InteractionContextType{
+		discordgo.InteractionContextGuild,
+		discordgo.InteractionContextBotDM,
+		discordgo.InteractionContextPrivateChannel,
+	}
+	integrationTypes := []discordgo.ApplicationIntegrationType{
+		discordgo.ApplicationIntegrationGuildInstall,
+	}
+
+	cmds := []*discordgo.ApplicationCommand{
+		{
+			Name:             "reset",
+			Description:      "Limpia el historial de tu conversación con aqua",
+			Contexts:         &allContexts,
+			IntegrationTypes: &integrationTypes,
+		},
+		{
+			Name:             "clear",
+			Description:      "Borra los mensajes del bot en este DM y limpia el historial",
+			Contexts:         &allContexts,
+			IntegrationTypes: &integrationTypes,
+		},
+		{
+			Name:             "tools",
+			Description:      "Lista las MCP tools disponibles",
+			Contexts:         &allContexts,
+			IntegrationTypes: &integrationTypes,
+		},
+		{
+			Name:             "skills",
+			Description:      "Lista las skills disponibles",
+			Contexts:         &allContexts,
+			IntegrationTypes: &integrationTypes,
+		},
+	}
+
+	for _, sk := range a.skills.list() {
+		desc := sk.description
+		if desc == "" {
+			desc = "Ejecuta la skill " + sk.name
+		}
+		if len(desc) > 100 {
+			desc = desc[:97] + "..."
+		}
+		cmds = append(cmds, &discordgo.ApplicationCommand{
+			Name:             sk.name,
+			Description:      desc,
+			Contexts:         &allContexts,
+			IntegrationTypes: &integrationTypes,
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "input",
+					Description: "Argumentos para la skill",
+					Required:    false,
+				},
+			},
+		})
+	}
+
+	return cmds
+}
+
+func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+
+	var userID, username string
+	if i.User != nil {
+		userID = i.User.ID
+		username = i.User.Username
+	} else if i.Member != nil && i.Member.User != nil {
+		userID = i.Member.User.ID
+		username = i.Member.User.Username
+	} else {
+		return
+	}
+
+	if !b.allowedIDs[userID] {
+		fmt.Fprintf(os.Stderr, "discord: slash rechazado de %s (%s)\n", username, userID)
+		respondEphemeral(s, i, "No autorizado.")
+		return
+	}
+
+	data := i.ApplicationCommandData()
+	name := data.Name
+	var input string
+	for _, opt := range data.Options {
+		if opt.Name == "input" {
+			input = opt.StringValue()
+		}
+	}
+
+	switch name {
+	case "reset":
+		b.convoMu.Lock()
+		sessionName := discordSessionPrefix + userID
+		empty := []message{}
+		b.convos[userID] = &empty
+		b.convoMu.Unlock()
+		_ = b.agent.sessions.save(sessionName, empty)
+		respondEphemeral(s, i, "(historial limpio)")
+		return
+	case "clear":
+		b.handleClear(s, i, userID)
+		return
+	case "tools":
+		tools := b.agent.mcp.tools()
+		if len(tools) == 0 {
+			respondEphemeral(s, i, "(sin tools cargadas)")
+			return
+		}
+		var sb strings.Builder
+		for _, t := range tools {
+			fmt.Fprintf(&sb, "- **%s** — %s\n", t.Function.Name, t.Function.Description)
+		}
+		respondEphemeral(s, i, truncateForDiscord(sb.String()))
+		return
+	case "skills":
+		skills := b.agent.skills.list()
+		if len(skills) == 0 {
+			respondEphemeral(s, i, "(sin skills cargadas)")
+			return
+		}
+		var sb strings.Builder
+		for _, sk := range skills {
+			d := sk.description
+			if d == "" {
+				d = "(sin descripción)"
+			}
+			fmt.Fprintf(&sb, "- **/%s** — %s\n", sk.name, d)
+		}
+		respondEphemeral(s, i, truncateForDiscord(sb.String()))
+		return
+	}
+
+	rendered, ok := b.agent.skills.render(name, input)
+	if !ok {
+		respondEphemeral(s, i, "Comando desconocido: /"+name)
+		return
+	}
+
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "discord: error defer:", err)
+		return
+	}
+
+	b.convoMu.Lock()
+	if b.busy[userID] {
+		b.convoMu.Unlock()
+		editInteractionResponse(s, i, "Tu mensaje anterior aún está procesándose. Aguardá.")
+		return
+	}
+	history, found := b.convos[userID]
+	if !found {
+		sessionName := discordSessionPrefix + userID
+		loaded, err := b.agent.sessions.load(sessionName)
+		if err != nil {
+			b.convoMu.Unlock()
+			editInteractionResponse(s, i, "Error cargando sesión: "+err.Error())
+			return
+		}
+		history = &loaded
+		b.convos[userID] = history
+	}
+	b.busy[userID] = true
+	b.convoMu.Unlock()
+
+	defer func() {
+		b.convoMu.Lock()
+		delete(b.busy, userID)
+		b.convoMu.Unlock()
+	}()
+
+	sessionName := discordSessionPrefix + userID
+	reqCtx, cancel := context.WithTimeout(context.Background(), discordRequestTimeout)
+	defer cancel()
+
+	fmt.Printf("discord slash: %s /%s %s\n", username, name, truncateForLog(input, 60))
+
+	reply, err := b.agent.send(reqCtx, history, sessionName, rendered)
+	if err != nil {
+		editInteractionResponse(s, i, "Error: "+err.Error())
+		return
+	}
+
+	chunks := splitForDiscord(reply, discordMaxMessageLen)
+	if len(chunks) == 0 {
+		chunks = []string{"(sin contenido)"}
+	}
+	editInteractionResponse(s, i, chunks[0])
+	for _, chunk := range chunks[1:] {
+		_, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{Content: chunk})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "discord: error followup:", err)
+		}
+	}
+}
+
+func (b *discordBot) handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, userID string) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "discord: error defer clear:", err)
+		return
+	}
+
+	b.convoMu.Lock()
+	sessionName := discordSessionPrefix + userID
+	empty := []message{}
+	b.convos[userID] = &empty
+	b.convoMu.Unlock()
+	_ = b.agent.sessions.save(sessionName, empty)
+
+	deleted := 0
+	scanned := 0
+	if i.ChannelID != "" {
+		before := ""
+		for page := 0; page < discordClearMaxPages; page++ {
+			msgs, err := s.ChannelMessages(i.ChannelID, discordClearPageSize, before, "", "")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "discord: error paginando historial:", err)
+				break
+			}
+			if len(msgs) == 0 {
+				break
+			}
+			scanned += len(msgs)
+			before = msgs[len(msgs)-1].ID
+			for _, msg := range msgs {
+				if msg.Author == nil || msg.Author.ID != s.State.User.ID {
+					continue
+				}
+				if err := s.ChannelMessageDelete(i.ChannelID, msg.ID); err == nil {
+					deleted++
+				}
+			}
+		}
+	}
+
+	editInteractionResponse(s, i, fmt.Sprintf("Limpieza: %d mensaje(s) del bot borrados (de %d revisados) + historial reseteado", deleted, scanned))
+}
+
+
+func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: content,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+}
+
+func editInteractionResponse(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "discord: error edit:", err)
+	}
+}
+
+func truncateForDiscord(s string) string {
+	if len(s) <= discordMaxMessageLen {
+		return s
+	}
+	return s[:discordMaxMessageLen-3] + "..."
 }
 
 func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
