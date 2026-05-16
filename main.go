@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -182,26 +183,26 @@ func (a *agent) callAPI(ctx context.Context, msgs []message) (*message, error) {
 	return &parsed.Choices[0].Message, nil
 }
 
-func (a *agent) send(ctx context.Context, userInput string) (string, error) {
-	checkpoint := len(a.history)
-	a.history = append(a.history, message{Role: "user", Content: userInput})
+func (a *agent) send(ctx context.Context, history *[]message, sessionName, userInput string) (string, error) {
+	checkpoint := len(*history)
+	*history = append(*history, message{Role: "user", Content: userInput})
 
 	for i := 0; i < maxToolIterations; i++ {
-		msgs := a.history
+		msgs := *history
 		if a.personality != "" {
-			msgs = append([]message{{Role: "system", Content: a.personality}}, a.history...)
+			msgs = append([]message{{Role: "system", Content: a.personality}}, *history...)
 		}
 
 		reply, err := a.callAPI(ctx, msgs)
 		if err != nil {
-			a.history = a.history[:checkpoint]
+			*history = (*history)[:checkpoint]
 			return "", err
 		}
 
-		a.history = append(a.history, *reply)
+		*history = append(*history, *reply)
 
 		if len(reply.ToolCalls) == 0 {
-			if err := a.sessions.save(a.sessions.current(), a.history); err != nil {
+			if err := a.sessions.save(sessionName, *history); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", err)
 			}
 			return reply.Content, nil
@@ -218,7 +219,7 @@ func (a *agent) send(ctx context.Context, userInput string) (string, error) {
 					content = content + "\n(error: " + callErr.Error() + ")"
 				}
 			}
-			a.history = append(a.history, message{
+			*history = append(*history, message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
 				Content:    content,
@@ -230,6 +231,9 @@ func (a *agent) send(ctx context.Context, userInput string) (string, error) {
 }
 
 func main() {
+	mode := flag.String("mode", "terminal", "interfaz: terminal | discord")
+	flag.Parse()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -240,6 +244,21 @@ func main() {
 	}
 	defer a.mcp.Close()
 
+	switch *mode {
+	case "terminal", "console":
+		runTerminal(ctx, a)
+	case "discord":
+		if err := runDiscord(ctx, a); err != nil {
+			fmt.Fprintln(os.Stderr, "discord:", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: terminal | discord)\n", *mode)
+		os.Exit(1)
+	}
+}
+
+func runTerminal(ctx context.Context, a *agent) {
 	personalityStatus := "sin personalidad"
 	if a.personality != "" {
 		personalityStatus = fmt.Sprintf("personalidad: %d chars", len(a.personality))
@@ -331,7 +350,7 @@ func main() {
 		}
 
 		reqCtx, reqCancel := context.WithTimeout(ctx, 5*time.Minute)
-		reply, err := a.send(reqCtx, input)
+		reply, err := a.send(reqCtx, &a.history, a.sessions.current(), input)
 		reqCancel()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
