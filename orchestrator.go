@@ -86,13 +86,25 @@ func (a *agent) runPool(ctx context.Context, jobs []Job, opts PoolOptions) []Res
 		go func() {
 			defer wg.Done()
 			for ij := range jobCh {
+				a.emit("job_start", ij.job.ID(), nil)
 				results[ij.idx] = runJob(ctx, ij.job, opts, exec)
+				r := results[ij.idx]
+				donePayload := map[string]any{
+					"success":    r.Err == nil,
+					"elapsed_ms": r.Elapsed.Milliseconds(),
+					"retries":    r.Retries,
+					"output":     r.Output,
+				}
+				if r.Err != nil {
+					donePayload["error"] = r.Err.Error()
+				}
+				a.emit("job_done", r.JobID, donePayload)
 				if opts.OnProgress != nil {
 					doneMu.Lock()
 					done++
 					d := done
 					doneMu.Unlock()
-					opts.OnProgress(d, len(jobs), results[ij.idx])
+					opts.OnProgress(d, len(jobs), r)
 				}
 			}
 		}()
@@ -153,6 +165,7 @@ func runJob(ctx context.Context, j Job, opts PoolOptions, exec ExecuteFunc) Resu
 // runIsolated procesa un Job en un worker: agente con history limpia que reusa
 // http y mcp del agente principal. No tiene skills ni sessions. El label del
 // worker es el JobID para que los tool-calls en los logs se identifiquen.
+// El sink de eventos se hereda para que los eventos del worker fluyan al UI.
 func (a *agent) runIsolated(ctx context.Context, j Job) (string, error) {
 	worker := &agent{
 		endpoint:    a.endpoint,
@@ -162,6 +175,7 @@ func (a *agent) runIsolated(ctx context.Context, j Job) (string, error) {
 		http:        a.http,
 		mcp:         a.mcp,
 		label:       j.ID(),
+		events:      a.events,
 	}
 	for _, sys := range j.System() {
 		worker.history = append(worker.history, message{Role: "system", Content: sys})

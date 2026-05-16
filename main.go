@@ -83,6 +83,10 @@ type agent struct {
 	// label identifica al agente en los logs de tool-call. Vacío = agente
 	// principal (sale como [tool]); con valor sale como [tool/<label>].
 	label string
+	// events recibe eventos del runtime (tool-calls, orquestador, etc.).
+	// nil = sin emisión (chat/discord modes funcionan igual). Workers
+	// heredan el sink del padre en runIsolated.
+	events EventSink
 }
 
 func loadPersonality() (string, error) {
@@ -288,6 +292,7 @@ func (a *agent) runConversation(ctx context.Context, history *[]message) (string
 			} else {
 				fmt.Printf("[tool] %s\n", tc.Function.Name)
 			}
+			a.emit("tool_call", a.label, map[string]any{"tool": tc.Function.Name})
 			result, callErr := a.mcp.callTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			content := result
 			if callErr != nil {
