@@ -152,7 +152,7 @@ func writeReport(req ReportRequest, results []Result, truncated bool) (string, e
 			fmt.Fprintf(&sb, "**No evaluado**\n- Motivo: %s\n- Reintentos: %d\n\n", r.Err, r.Retries)
 			continue
 		}
-		body := strings.TrimSpace(r.Output)
+		body := stripPreamble(strings.TrimSpace(r.Output))
 		if body == "" {
 			body = "_(respuesta vacía)_"
 		}
@@ -164,6 +164,17 @@ func writeReport(req ReportRequest, results []Result, truncated bool) (string, e
 		return "", err
 	}
 	return path, nil
+}
+
+// stripPreamble corta lo que el worker haya escrito antes del "**Veredicto general:**"
+// que la plantilla exige como primera línea. Red de seguridad cuando el style
+// override no fue suficiente. Si el marker no aparece, devuelve el body tal cual.
+func stripPreamble(body string) string {
+	const marker = "**Veredicto general:**"
+	if idx := strings.Index(body, marker); idx > 0 {
+		return strings.TrimSpace(body[idx:])
+	}
+	return body
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
