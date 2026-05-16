@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,7 @@ import (
 const (
 	discordMaxMessageLen  = 1900
 	discordSessionPrefix  = "discord-"
-	discordRequestTimeout = 5 * time.Minute
+	discordRequestTimeout = 30 * time.Minute
 	discordClearPageSize  = 100
 	discordClearMaxPages  = 100
 )
@@ -310,7 +311,7 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 
 	fmt.Printf("discord slash: %s /%s %s\n", username, name, truncateForLog(input, 60))
 
-	reply, err := b.agent.send(reqCtx, history, sessionName, rendered)
+	reply, artifact, err := b.agent.sendAndDispatch(reqCtx, history, sessionName, rendered)
 	if err != nil {
 		editInteractionResponse(s, i, "Error: "+err.Error())
 		return
@@ -325,6 +326,11 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 		_, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{Content: chunk})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "discord: error followup:", err)
+		}
+	}
+	if artifact != "" {
+		if err := sendInteractionFile(s, i, artifact); err != nil {
+			fmt.Fprintln(os.Stderr, "discord: error adjuntando artifact:", err)
 		}
 	}
 }
@@ -400,6 +406,36 @@ func truncateForDiscord(s string) string {
 	return s[:discordMaxMessageLen-3] + "..."
 }
 
+// sendInteractionFile adjunta el archivo del path como followup de una interaction.
+func sendInteractionFile(s *discordgo.Session, i *discordgo.InteractionCreate, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("abriendo %s: %w", path, err)
+	}
+	defer f.Close()
+	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Files: []*discordgo.File{
+			{Name: filepath.Base(path), Reader: f},
+		},
+	})
+	return err
+}
+
+// sendChannelFile adjunta el archivo del path a un canal (uso desde DMs).
+func sendChannelFile(s *discordgo.Session, channelID, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("abriendo %s: %w", path, err)
+	}
+	defer f.Close()
+	_, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Files: []*discordgo.File{
+			{Name: filepath.Base(path), Reader: f},
+		},
+	})
+	return err
+}
+
 func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID || m.Author.Bot {
 		return
@@ -453,7 +489,7 @@ func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate)
 	stopTyping := keepTyping(ctx, s, m.ChannelID)
 	defer stopTyping()
 
-	reply, err := b.agent.send(ctx, history, sessionName, text)
+	reply, artifact, err := b.agent.sendAndDispatch(ctx, history, sessionName, text)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discord: error en send:", err)
 		_, _ = s.ChannelMessageSend(m.ChannelID, "Error: "+err.Error())
@@ -464,6 +500,11 @@ func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate)
 		if _, err := s.ChannelMessageSend(m.ChannelID, chunk); err != nil {
 			fmt.Fprintln(os.Stderr, "discord: error enviando:", err)
 			return
+		}
+	}
+	if artifact != "" {
+		if err := sendChannelFile(s, m.ChannelID, artifact); err != nil {
+			fmt.Fprintln(os.Stderr, "discord: error adjuntando artifact:", err)
 		}
 	}
 }

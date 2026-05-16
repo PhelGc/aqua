@@ -205,6 +205,57 @@ func (a *agent) send(ctx context.Context, history *[]message, sessionName, userI
 	return reply, nil
 }
 
+// sendAndDispatch wraps send() para detectar un marker <orchestrate> en la
+// respuesta del LLM. Si lo encuentra, despacha al adaptador correspondiente y
+// devuelve (texto-consolidado, path-del-artifact). Si no, devuelve (reply, "").
+// Cuando dispatcha, el último mensaje del assistant en *history se reemplaza
+// por el texto consolidado para que el LLM no vuelva a ver su propio marker.
+func (a *agent) sendAndDispatch(ctx context.Context, history *[]message, sessionName, userInput string) (text, artifact string, err error) {
+	reply, err := a.send(ctx, history, sessionName, userInput)
+	if err != nil {
+		return "", "", err
+	}
+	m, prose, ok := parseOrchestrate(reply)
+	if !ok {
+		return reply, "", nil
+	}
+	path, summary, derr := a.dispatchOrchestrate(ctx, m)
+	if derr != nil {
+		fail := strings.TrimSpace(prose) + "\n\n(error orquestando: " + derr.Error() + ")"
+		return fail, "", derr
+	}
+	consolidated := strings.TrimSpace(prose)
+	if consolidated == "" {
+		consolidated = summary
+	} else {
+		consolidated = consolidated + "\n\n" + summary
+	}
+	for i := len(*history) - 1; i >= 0; i-- {
+		if (*history)[i].Role == "assistant" {
+			(*history)[i].Content = consolidated
+			(*history)[i].ToolCalls = nil
+			break
+		}
+	}
+	if a.sessions != nil && sessionName != "" {
+		if saveErr := a.sessions.save(sessionName, *history); saveErr != nil {
+			fmt.Fprintln(os.Stderr, "warning: no se pudo guardar sesión:", saveErr)
+		}
+	}
+	return consolidated, path, nil
+}
+
+// dispatchOrchestrate despacha el marker al adaptador correspondiente según kind.
+// Cada adaptador devuelve (path-del-artifact, summary-texto, err).
+func (a *agent) dispatchOrchestrate(ctx context.Context, m orchestrateMarker) (artifact, summary string, err error) {
+	switch m.Kind {
+	case "report":
+		return a.runReport(ctx, m.Payload)
+	default:
+		return "", "", fmt.Errorf("kind de orchestrate desconocido: %q", m.Kind)
+	}
+}
+
 // runConversation ejecuta el loop de chat hasta que el modelo deja de pedir tools
 // o se alcanza maxToolIterations. Modifica *history (append-only) pero no
 // persiste sesión ni hace rollback. Reusable por workers del orquestador.
@@ -367,14 +418,17 @@ func runTerminal(ctx context.Context, a *agent) {
 			}
 		}
 
-		reqCtx, reqCancel := context.WithTimeout(ctx, 5*time.Minute)
-		reply, err := a.send(reqCtx, &a.history, a.sessions.current(), input)
+		reqCtx, reqCancel := context.WithTimeout(ctx, 30*time.Minute)
+		reply, artifact, err := a.sendAndDispatch(reqCtx, &a.history, a.sessions.current(), input)
 		reqCancel()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			continue
 		}
 		fmt.Println(reply)
+		if artifact != "" {
+			fmt.Printf("(archivo: %s)\n", artifact)
+		}
 		fmt.Println()
 	}
 }
