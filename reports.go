@@ -13,60 +13,37 @@ import (
 )
 
 // ReportRequest es el payload que el LLM emite dentro del marker
-// <orchestrate kind="report">.
-//
-// El LLM tiene que:
-//   1. traducir el filtro NL del usuario a JQL,
-//   2. llamar el tool de Jira para listar los tickets,
-//   3. emitir el marker con los tickets ya pre-fetched.
-//
-// Cada ticket carga lo necesario para que el worker lo evalúe sin volver a
-// llamar a la API de Jira (a menos que necesite algo puntual).
+// <orchestrate kind="report">. El LLM solo manda la lista de KEYs; cada worker
+// es autónomo y fetchea su propio ticket vía MCP.
 type ReportRequest struct {
-	Descripcion string         `json:"descripcion"`
-	Tickets     []ReportTicket `json:"tickets"`
+	Descripcion string   `json:"descripcion"`
+	Tickets     []string `json:"tickets"`
 }
 
-// ReportTicket es lo que el LLM le pasa al worker para evaluar.
-// Es un map para no encorsetarlo: el LLM decide qué campos meter según el caso.
-type ReportTicket struct {
-	Key    string                 `json:"key"`
-	Fields map[string]any         `json:"fields,omitempty"`
-}
-
-// ReportJob implementa Job para el orquestador.
+// ReportJob implementa Job. Cada worker corre el skill /evaluar-tarea sobre
+// un ticket de forma 100% autónoma: lee docs, llama Jira, decide.
 type ReportJob struct {
-	Ticket ReportTicket
+	Key      string
+	Rendered string // /evaluar-tarea renderizado con la KEY como {{input}}
 }
 
-func (j ReportJob) ID() string { return j.Ticket.Key }
+const reportStyleOverride = `Estás procesando un ticket dentro de un reporte batch.
 
-func (j ReportJob) System() []string {
-	return []string{
-		"Sos una evaluadora de tickets de Jira. Vas a recibir UN ticket. " +
-			"Aplicá los criterios de evaluación que ya conocés (DoD, claridad, valor, vínculos, " +
-			"estimación, título correcto). Devolvé markdown puro y breve con:\n" +
-			"- **Veredicto**: aprobado | con observaciones | rechazado\n" +
-			"- **Motivos**: bullets cortos.\n" +
-			"- **Observaciones**: bullets cortos si aplica.\n" +
-			"Nada de markers, nada de JSON, solo texto markdown. Sin saludos ni floritura.",
-	}
-}
+REGLAS DE FORMATO ESTRICTAS (sobreescriben tu personalidad por completo):
+- Tu mensaje final DEBE empezar literalmente con "**Veredicto general:**".
+- CERO preámbulo. NADA antes de esa primera línea. Ni "Procedo con la evaluación.", ni "Ya tengo la info.", ni "Acá va.", ni una sola palabra. Si lo hacés, el reporte queda inconsistente.
+- Headers de sección **exactamente** así: --- Título --- / --- Descripción --- / --- Conclusión --- / --- Armonía --- (SIN ### adelante, SIN ## adelante, SIN bold).
+- Claves de criterio SIN bold: "- Prefijo: ✅ — ..." (NO "- **Prefijo:** ✅").
+- Omití líneas de criterios que NO aplican al tipo (no imprimas "Story Points: ✅ — No aplica").
+- Omití "**Sugerencia:**" entera si el título está bien (no la imprimas vacía ni con guión).
+- NO uses voz teatral, NO saludos, NO floritura, NO tercera persona.
+- NO emitas markers <orchestrate> ni JSON. Solo el markdown del veredicto.
 
-func (j ReportJob) Prompt() string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Ticket: %s\n", j.Ticket.Key)
-	if len(j.Ticket.Fields) > 0 {
-		sb.WriteString("\nCampos:\n")
-		// Imprimimos los fields como JSON indentado: el LLM los lee bien y
-		// no perdemos estructura para campos anidados.
-		if data, err := json.MarshalIndent(j.Ticket.Fields, "", "  "); err == nil {
-			sb.Write(data)
-			sb.WriteString("\n")
-		}
-	}
-	return sb.String()
-}
+Por lo demás trabajás como siempre: leé el INDEX si te hace falta, consultá Jira, aplicá las reglas internas. La autonomía es total para investigar; el formato del output final es rígido.`
+
+func (j ReportJob) ID() string         { return j.Key }
+func (j ReportJob) System() []string   { return []string{reportStyleOverride} }
+func (j ReportJob) Prompt() string     { return j.Rendered }
 
 // runReport ejecuta el reporte: parsea payload, fan-out a workers, escribe .md.
 // Devuelve path del archivo y un summary corto para mostrarle al usuario.
@@ -87,8 +64,12 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 	}
 
 	jobs := make([]Job, len(req.Tickets))
-	for i, t := range req.Tickets {
-		jobs[i] = ReportJob{Ticket: t}
+	for i, key := range req.Tickets {
+		rendered, ok := a.skills.render("evaluar-tarea", key)
+		if !ok {
+			return "", "", fmt.Errorf("skill 'evaluar-tarea' no está cargada; cada worker la necesita")
+		}
+		jobs[i] = ReportJob{Key: key, Rendered: rendered}
 	}
 
 	opts := PoolOptions{
@@ -96,8 +77,12 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 		MaxRetries:    envInt("ORCH_MAX_RETRIES", 2),
 		BackoffBase:   envDuration("ORCH_BACKOFF_BASE", 200*time.Millisecond),
 		PerJobTimeout: envDuration("ORCH_PER_JOB_TIMEOUT", 2*time.Minute),
-		OnProgress: func(done, total int) {
-			fmt.Printf("[orch] %d/%d\n", done, total)
+		OnProgress: func(done, total int, r Result) {
+			status := "ok"
+			if r.Err != nil {
+				status = fmt.Sprintf("FAIL: %v", r.Err)
+			}
+			fmt.Printf("[orch] %d/%d  %s  (%s, %s)\n", done, total, r.JobID, r.Elapsed.Round(time.Millisecond), status)
 		},
 	}
 
