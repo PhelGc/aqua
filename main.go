@@ -346,8 +346,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "discord:", err)
 			os.Exit(1)
 		}
+	case "ui", "web":
+		if err := runWeb(ctx, a); err != nil {
+			fmt.Fprintln(os.Stderr, "ui:", err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: terminal | discord)\n", *mode)
+		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: terminal | discord | ui)\n", *mode)
 		os.Exit(1)
 	}
 }
