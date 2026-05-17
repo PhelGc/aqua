@@ -80,6 +80,7 @@ type agent struct {
 	mcp         *mcpManager
 	skills      *skillRegistry
 	sessions    *sessionManager
+	scheduler   *scheduler
 	// label identifica al agente en los logs de tool-call. Vacío = agente
 	// principal (sale como [tool]); con valor sale como [tool/<label>].
 	label string
@@ -141,7 +142,11 @@ func newAgent(ctx context.Context) (*agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cargando sesión %q: %w", sessions.current(), err)
 	}
-	return &agent{
+	sched, err := newScheduler(defaultSchedulesDir)
+	if err != nil {
+		return nil, fmt.Errorf("iniciando scheduler: %w", err)
+	}
+	a := &agent{
 		endpoint:    endpoint,
 		model:       model,
 		apiKey:      key,
@@ -151,7 +156,11 @@ func newAgent(ctx context.Context) (*agent, error) {
 		mcp:         manager,
 		skills:      skills,
 		sessions:    sessions,
-	}, nil
+		scheduler:   sched,
+	}
+	sched.runner = a.runScheduled
+	go sched.start(ctx)
+	return a, nil
 }
 
 func (a *agent) callAPI(ctx context.Context, msgs []message) (*message, error) {
@@ -259,6 +268,8 @@ func (a *agent) dispatchOrchestrate(ctx context.Context, m orchestrateMarker) (a
 	switch m.Kind {
 	case "report":
 		return a.runReport(ctx, m.Payload)
+	case "schedule":
+		return a.runScheduleAdapter(ctx, m.Payload)
 	default:
 		return "", "", fmt.Errorf("kind de orchestrate desconocido: %q", m.Kind)
 	}
