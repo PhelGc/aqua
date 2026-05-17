@@ -15,6 +15,19 @@ const (
 
 var utf8BOM = string([]byte{0xEF, 0xBB, 0xBF})
 
+// skillNameNormalizer reemplaza acentos comunes y mapea a minúsculas para que
+// /recordá y /recorda matcheen el mismo skill (no se complica la vida el usuario
+// tipeando acentos en una terminal).
+var skillNameNormalizer = strings.NewReplacer(
+	"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u",
+	"Á", "a", "É", "e", "Í", "i", "Ó", "o", "Ú", "u",
+	"ñ", "n", "Ñ", "n", "ü", "u", "Ü", "u",
+)
+
+func normalizeSkillName(s string) string {
+	return strings.ToLower(skillNameNormalizer.Replace(s))
+}
+
 type skill struct {
 	name        string
 	description string
@@ -48,7 +61,7 @@ func loadSkills() (*skillRegistry, error) {
 			return nil, fmt.Errorf("leyendo skill %q: %w", name, err)
 		}
 		desc, body := parseSkillFile(string(data))
-		r.skills[name] = &skill{
+		r.skills[normalizeSkillName(name)] = &skill{
 			name:        name,
 			description: desc,
 			template:    body,
@@ -80,7 +93,7 @@ func parseSkillFile(content string) (description, body string) {
 }
 
 func (r *skillRegistry) render(name, args string) (string, bool) {
-	s, ok := r.skills[name]
+	s, ok := r.skills[normalizeSkillName(name)]
 	if !ok {
 		return "", false
 	}
