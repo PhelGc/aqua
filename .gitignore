@@ -26,6 +26,9 @@ reports/
 # Tareas programadas (estado local)
 schedules/
 
+# Memoria persistente local
+memory.md
+
 # Documentación interna (manuales, referencias confidenciales)
 docs/
 
