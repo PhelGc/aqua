@@ -278,12 +278,23 @@ func (a *agent) dispatchOrchestrate(ctx context.Context, m orchestrateMarker) (a
 // runConversation ejecuta el loop de chat hasta que el modelo deja de pedir tools
 // o se alcanza maxToolIters(). Modifica *history (append-only) pero no
 // persiste sesión ni hace rollback. Reusable por workers del orquestador.
+//
+// La memoria persistente (memory.md) se lee una vez por llamada para que cambios
+// hechos por aqua en turnos anteriores queden visibles.
 func (a *agent) runConversation(ctx context.Context, history *[]message) (string, error) {
 	limit := maxToolIters()
+	memory, _ := loadMemory()
 	for i := 0; i < limit; i++ {
 		msgs := *history
+		var systems []message
 		if a.personality != "" {
-			msgs = append([]message{{Role: "system", Content: a.personality}}, *history...)
+			systems = append(systems, message{Role: "system", Content: a.personality})
+		}
+		if memory != "" {
+			systems = append(systems, message{Role: "system", Content: "## Tu memoria persistente (memory.md)\n\n" + memory})
+		}
+		if len(systems) > 0 {
+			msgs = append(systems, *history...)
 		}
 
 		reply, err := a.callAPI(ctx, msgs)
