@@ -23,6 +23,9 @@ sessions/
 # Reportes generados por el orquestador
 reports/
 
+# Tareas programadas (estado local)
+schedules/
+
 # Documentación interna (manuales, referencias confidenciales)
 docs/
 

@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/modelcontextprotocol/go-sdk v1.6.0
+	github.com/robfig/cron/v3 v3.0.1
 )
 
 require (
