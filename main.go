@@ -80,9 +80,14 @@ type agent struct {
 	mcp         *mcpManager
 	skills      *skillRegistry
 	sessions    *sessionManager
+	scheduler   *scheduler
 	// label identifica al agente en los logs de tool-call. Vacío = agente
 	// principal (sale como [tool]); con valor sale como [tool/<label>].
 	label string
+	// events recibe eventos del runtime (tool-calls, orquestador, etc.).
+	// nil = sin emisión (chat/discord modes funcionan igual). Workers
+	// heredan el sink del padre en runIsolated.
+	events EventSink
 }
 
 func loadPersonality() (string, error) {
@@ -137,7 +142,11 @@ func newAgent(ctx context.Context) (*agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cargando sesión %q: %w", sessions.current(), err)
 	}
-	return &agent{
+	sched, err := newScheduler(defaultSchedulesDir)
+	if err != nil {
+		return nil, fmt.Errorf("iniciando scheduler: %w", err)
+	}
+	a := &agent{
 		endpoint:    endpoint,
 		model:       model,
 		apiKey:      key,
@@ -147,7 +156,11 @@ func newAgent(ctx context.Context) (*agent, error) {
 		mcp:         manager,
 		skills:      skills,
 		sessions:    sessions,
-	}, nil
+		scheduler:   sched,
+	}
+	sched.runner = a.runScheduled
+	go sched.start(ctx)
+	return a, nil
 }
 
 func (a *agent) callAPI(ctx context.Context, msgs []message) (*message, error) {
@@ -255,6 +268,8 @@ func (a *agent) dispatchOrchestrate(ctx context.Context, m orchestrateMarker) (a
 	switch m.Kind {
 	case "report":
 		return a.runReport(ctx, m.Payload)
+	case "schedule":
+		return a.runScheduleAdapter(ctx, m.Payload)
 	default:
 		return "", "", fmt.Errorf("kind de orchestrate desconocido: %q", m.Kind)
 	}
@@ -288,6 +303,7 @@ func (a *agent) runConversation(ctx context.Context, history *[]message) (string
 			} else {
 				fmt.Printf("[tool] %s\n", tc.Function.Name)
 			}
+			a.emit("tool_call", a.label, map[string]any{"tool": tc.Function.Name})
 			result, callErr := a.mcp.callTool(ctx, tc.Function.Name, tc.Function.Arguments)
 			content := result
 			if callErr != nil {
@@ -341,8 +357,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "discord:", err)
 			os.Exit(1)
 		}
+	case "ui", "web":
+		if err := runWeb(ctx, a); err != nil {
+			fmt.Fprintln(os.Stderr, "ui:", err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: terminal | discord)\n", *mode)
+		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: terminal | discord | ui)\n", *mode)
 		os.Exit(1)
 	}
 }

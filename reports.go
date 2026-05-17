@@ -87,6 +87,13 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 	}
 
 	fmt.Printf("[orch] iniciando reporte: %d tickets, pool=%d\n", len(jobs), opts.Size)
+	a.emit("orch_start", "", map[string]any{
+		"kind":        "report",
+		"descripcion": req.Descripcion,
+		"total":       len(jobs),
+		"pool_size":   opts.Size,
+		"job_ids":     req.Tickets,
+	})
 	results := a.runPool(ctx, jobs, opts)
 
 	ok, fail := 0, 0
@@ -108,6 +115,14 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 	if truncated {
 		summary += fmt.Sprintf(" (truncado a %d, había más)", maxTickets)
 	}
+	a.emit("orch_done", "", map[string]any{
+		"kind":        "report",
+		"descripcion": req.Descripcion,
+		"artifact":    path,
+		"ok":          ok,
+		"fail":        fail,
+		"truncated":   truncated,
+	})
 	return path, summary, nil
 }
 
