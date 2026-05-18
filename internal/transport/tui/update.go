@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -92,6 +93,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Esc o Ctrl+X durante un send cancela el request en vuelo.
+		if m.state == stateSending && (msg.String() == "esc" || msg.String() == "ctrl+x") {
+			if m.cancelReq != nil {
+				m.cancelReq()
+			}
+			return m, nil
+		}
+
 		// Enter sin popup → submit normal.
 		if msg.String() == "enter" {
 			if m.state == stateSending {
@@ -121,16 +130,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, next
 
+	case streamDeltaMsg:
+		// Acumulamos el delta en la última línea del tipo correspondiente.
+		// reasoning_content y content pueden venir intercalados pero los
+		// mantenemos en líneas separadas para que el thinking quede arriba.
+		if msg.ReasoningContent != "" {
+			m.appendOrExtend(lineThinking, msg.ReasoningContent)
+		}
+		if msg.Content != "" {
+			m.appendOrExtend(lineAssistant, msg.Content)
+		}
+		// Re-encolamos la espera del próximo delta. Si el canal se cerró
+		// (deltaCh == nil) no reagendamos: el chatReplyMsg viene por su
+		// propio camino.
+		if m.deltaCh != nil {
+			return m, waitForDelta(m.deltaCh)
+		}
+		return m, nil
+
 	case chatReplyMsg:
 		m.state = stateNormal
+		m.deltaCh = nil
+		m.cancelReq = nil
+		m.collapseThinking()
 		if msg.err != nil {
-			m.appendLine(lineError, msg.err.Error())
-		} else {
-			body := msg.text
-			if msg.artifact != "" {
-				body = body + "\n(archivo: " + msg.artifact + ")"
+			// Cancelación voluntaria: nota más suave que un error rojo.
+			if errors.Is(msg.err, context.Canceled) {
+				m.appendLine(lineSystem, "request cancelado")
+			} else {
+				m.appendLine(lineError, msg.err.Error())
 			}
-			m.appendLine(lineAssistant, body)
+			return m, nil
+		}
+		// Si veníamos streameando content, la última línea ya tiene el texto
+		// completo. Solo sobrescribimos cuando hay artifact (no llegó por
+		// stream) o cuando NO hubo stream (fallback de callAPIStream o
+		// endpoints que no devuelven SSE).
+		if msg.artifact != "" {
+			m.appendOrExtend(lineAssistant, "\n(archivo: "+msg.artifact+")")
+		}
+		if !hasAssistantLine(m.chatView) {
+			m.appendLine(lineAssistant, msg.text)
 		}
 		return m, nil
 	}
@@ -197,15 +237,26 @@ func (m model) submit(text string) (model, tea.Cmd) {
 				return m, nil
 			}
 			m.appendLine(lineUser, text)
-			m.state = stateSending
-			return m, sendChat(context.Background(), m, rendered)
+			return m.startStreaming(rendered)
 		}
 	}
 
 	m.appendLine(lineUser, text)
+	return m.startStreaming(text)
+}
+
+// startStreaming arma el ctx cancelable, lanza el send en background y
+// devuelve los Cmds que escuchan el stream de deltas y la respuesta final.
+func (m model) startStreaming(prompt string) (model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelReq = cancel
 	m.state = stateSending
-	// Sin timeout duro: el agent ya tiene timeout interno por tool-call.
-	return m, sendChat(context.Background(), m, text)
+	deltaCh, replyCh := startSend(ctx, m, prompt)
+	m.deltaCh = deltaCh
+	return m, tea.Batch(
+		waitForDelta(deltaCh),
+		waitForReply(replyCh),
+	)
 }
 
 // layout calcula tamaños de viewport e input según width/height actuales.

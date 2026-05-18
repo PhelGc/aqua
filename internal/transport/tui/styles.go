@@ -34,9 +34,10 @@ var (
 			BorderForeground(colorBorder).
 			Padding(0, 0)
 
-	userPrefix = lipgloss.NewStyle().Bold(true).Foreground(colorYou).Render("you ")
-	aquaPrefix = lipgloss.NewStyle().Bold(true).Foreground(colorAqua).Render("aqua ")
-	toolStyle  = lipgloss.NewStyle().Foreground(colorTool)
-	errorStyle = lipgloss.NewStyle().Foreground(colorError)
-	mutedStyle = lipgloss.NewStyle().Foreground(colorMuted)
+	userPrefix    = lipgloss.NewStyle().Bold(true).Foreground(colorYou).Render("you ")
+	aquaPrefix    = lipgloss.NewStyle().Bold(true).Foreground(colorAqua).Render("aqua ")
+	toolStyle     = lipgloss.NewStyle().Foreground(colorTool)
+	errorStyle    = lipgloss.NewStyle().Foreground(colorError)
+	mutedStyle    = lipgloss.NewStyle().Foreground(colorMuted)
+	thinkingStyle = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 )

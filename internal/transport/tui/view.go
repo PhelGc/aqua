@@ -97,7 +97,7 @@ func (m model) renderHeader() string {
 func (m model) renderFooter() string {
 	var hint string
 	if m.state == stateSending {
-		hint = m.spinner.View() + " enviando…"
+		hint = m.spinner.View() + " enviando… · esc cancelar"
 	} else if m.completion.visible {
 		hint = "↑↓ navegar · tab/enter completar · esc cerrar"
 	} else if m.width < 60 {
@@ -251,6 +251,10 @@ func renderLine(l chatLine, width int) string {
 		return errorStyle.Render("✗ " + l.text)
 	case lineSystem:
 		return mutedStyle.Render("· " + l.text)
+	case lineThinking:
+		return thinkingStyle.Render("· pensando\n" + wrap.Render(l.text))
+	case lineThinkingClosed:
+		return mutedStyle.Render("» thinking: " + l.text)
 	}
 	return l.text
 }

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -9,6 +11,7 @@ import (
 
 	"aqua/internal/agent"
 	"aqua/internal/events"
+	"aqua/internal/llm"
 )
 
 // lineKind clasifica una entrada del chat para renderizar con prefix/color.
@@ -20,6 +23,8 @@ const (
 	lineTool
 	lineError
 	lineSystem
+	lineThinking        // reasoning_content del LLM en gris cursiva
+	lineThinkingClosed  // bloque colapsado "» thinking: ..." tras terminar
 )
 
 type chatLine struct {
@@ -39,12 +44,14 @@ const (
 )
 
 type model struct {
-	agent   *agent.Agent
-	sink    *events.FanoutSink
-	eventCh <-chan events.Event // canal del subscriber, set en Init
-	width   int
-	height  int
-	state   state
+	agent     *agent.Agent
+	sink      *events.FanoutSink
+	eventCh   <-chan events.Event // canal del subscriber, set en Init
+	deltaCh   <-chan llm.StreamDelta // deltas del send en vuelo, nil entre sends
+	cancelReq context.CancelFunc  // cancela el request en vuelo (esc/ctrl+x)
+	width     int
+	height    int
+	state     state
 
 	viewport viewport.Model
 	input    textarea.Model
@@ -104,6 +111,72 @@ func newModel(a *agent.Agent, sink *events.FanoutSink) model {
 // el primer layout() la renderizará con el ancho correcto.
 func (m *model) appendLine(kind lineKind, text string) {
 	m.chatView = append(m.chatView, chatLine{kind: kind, text: text, time: time.Now()})
+	m.refreshViewport()
+}
+
+// appendOrExtend busca la última línea del mismo kind y le concatena text.
+// Si no existe (o la última no es de ese kind), agrega una nueva. Pensado
+// para acumular deltas del stream sin spamear líneas separadas.
+func (m *model) appendOrExtend(kind lineKind, text string) {
+	if n := len(m.chatView); n > 0 && m.chatView[n-1].kind == kind {
+		m.chatView[n-1].text += text
+	} else {
+		m.chatView = append(m.chatView, chatLine{kind: kind, text: text, time: time.Now()})
+	}
+	m.refreshViewport()
+}
+
+// collapseThinking convierte la última línea lineThinking en lineThinkingClosed
+// con el texto truncado. Se llama al terminar el stream para no dejar el
+// razonamiento expandido para siempre.
+func (m *model) collapseThinking() {
+	for i := len(m.chatView) - 1; i >= 0; i-- {
+		if m.chatView[i].kind == lineThinking {
+			m.chatView[i].kind = lineThinkingClosed
+			m.chatView[i].text = collapseSnippet(m.chatView[i].text)
+			break
+		}
+		// Si ya pasamos por una línea assistant, el thinking ya quedó cerrado
+		// antes (turno anterior); no buscamos más atrás.
+		if m.chatView[i].kind == lineAssistant {
+			break
+		}
+	}
+	m.refreshViewport()
+}
+
+// hasAssistantLine devuelve true si las últimas líneas tras el último user
+// incluyen ya una línea assistant. Sirve para decidir si necesitamos crear
+// la respuesta de cero (fallback no-stream) o ya viene del stream.
+func hasAssistantLine(lines []chatLine) bool {
+	for i := len(lines) - 1; i >= 0; i-- {
+		switch lines[i].kind {
+		case lineAssistant:
+			return true
+		case lineUser:
+			return false
+		}
+	}
+	return false
+}
+
+// collapseSnippet toma el thinking completo y devuelve una primera línea
+// representativa: hasta el primer "\n" o 80 chars, lo que llegue antes.
+func collapseSnippet(s string) string {
+	s = strings.TrimSpace(s)
+	if idx := strings.IndexByte(s, '\n'); idx > 0 {
+		s = s[:idx]
+	}
+	const maxLen = 80
+	if len([]rune(s)) > maxLen {
+		s = string([]rune(s)[:maxLen]) + "…"
+	}
+	return s
+}
+
+// refreshViewport re-renderiza el chatView en el viewport. Es no-op si el
+// ancho todavía no llegó (lo dispara el primer WindowSizeMsg).
+func (m *model) refreshViewport() {
 	if m.viewport.Width == 0 {
 		return
 	}
