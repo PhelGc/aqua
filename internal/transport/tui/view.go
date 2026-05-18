@@ -17,6 +17,12 @@ const (
 )
 
 func (m model) View() string {
+	// Modo pausado: no renderizamos nada. El chat ya fue dumpeado a stdout
+	// fuera del alt-screen y queremos que el terminal mantenga ese output
+	// visible sin pisarlo con frames del TUI.
+	if m.state == statePaused {
+		return ""
+	}
 	if m.width == 0 {
 		return "" // todavía no recibimos WindowSizeMsg
 	}
@@ -101,9 +107,9 @@ func (m model) renderFooter() string {
 	} else if m.completion.visible {
 		hint = "↑↓ navegar · tab/enter completar · esc cerrar"
 	} else if m.width < 60 {
-		hint = "ctrl+c salir · ctrl+s sesiones"
+		hint = "ctrl+c salir · ctrl+s sesiones · ctrl+p pausa"
 	} else {
-		hint = "ctrl+c salir · enter enviar · ctrl+j línea nueva · ctrl+s sesiones"
+		hint = "ctrl+c salir · enter enviar · ctrl+j línea nueva · ctrl+s sesiones · ctrl+p pausa"
 	}
 	avail := m.width - 4
 	if lipgloss.Width(hint) > avail {

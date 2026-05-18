@@ -15,24 +15,29 @@ import (
 
 // Run levanta el TUI bloqueante. Retorna cuando el usuario sale o ctx se cancela.
 //
-// Silencia stdout y stderr durante la ejecución porque el agente y MCP
-// imprimen logs crudos (por ejemplo `[tool] xxx` desde chat.go) que romperían
-// el rendering de Bubble Tea. La info equivalente llega al viewport vía el
-// event sink. Trade-off: si algo paniquea no vamos a ver el stack — si esto
-// se vuelve un problema, redirigir stderr a un archivo log opcional.
+// Silencia stdout para que los logs crudos del agente/MCP no rompan el
+// rendering de Bubble Tea. Stderr lo redirige a aqua-tui.log para que los
+// panics y warnings queden recuperables (sino se pierden y debugar es
+// imposible).
 func Run(ctx context.Context, a *agent.Agent) error {
 	// Guardamos el TTY original para pasárselo explícitamente a Bubble Tea.
 	// Si redirigíamos os.Stdout sin esto, Bubble Tea heredaba el /dev/null y
 	// renderizaba a la nada → pantalla negra.
 	origStdout, origStderr := os.Stdout, os.Stderr
-	silenced, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err == nil {
-		os.Stdout = silenced
-		os.Stderr = silenced
+		os.Stdout = devNull
 		defer func() {
 			os.Stdout = origStdout
+			devNull.Close()
+		}()
+	}
+	logFile, err := os.OpenFile("aqua-tui.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		os.Stderr = logFile
+		defer func() {
 			os.Stderr = origStderr
-			silenced.Close()
+			logFile.Close()
 		}()
 	}
 
@@ -41,7 +46,7 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	sink := events.NewFanout(64, 100)
 	a.SetEvents(sink)
 
-	m := newModel(a, sink)
+	m := newModel(a, sink, origStdout)
 	p := tea.NewProgram(m,
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),

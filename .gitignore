@@ -3,6 +3,10 @@
 *.exe~
 /aqua
 
+# Logs locales de debug
+aqua-*.log
+*.dmp
+
 # Secretos / entorno
 .env
 .env.local

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ const (
 	stateNormal        state = iota
 	stateSending             // request en vuelo, input deshabilitado
 	stateSessionsModal       // modal abierto, input ignora teclas
+	statePaused              // TUI fuera de alt-screen para permitir copia/scroll con mouse
 )
 
 type model struct {
@@ -49,10 +51,16 @@ type model struct {
 	eventCh   <-chan events.Event    // canal del subscriber, set en Init
 	deltaCh   <-chan llm.StreamDelta // deltas del send en vuelo, nil entre sends
 	cancelReq context.CancelFunc     // cancela el request en vuelo (esc/ctrl+x)
+	rawStdout *os.File               // stdout real para escribir cuando estamos en statePaused
 	// thinkingBuf acumula reasoning_content del turn actual sin mostrarlo;
 	// se muestra colapsado al cerrar el turn. Lo separamos del chatView para
 	// que el orden de deltas content/reasoning no rompa el layout.
-	thinkingBuf strings.Builder
+	//
+	// Es un string (no strings.Builder) porque Bubble Tea copia el model
+	// por valor en cada Update, y Builder paniquea con copyCheck si se
+	// usa después de ser copiado. Append directo es menos eficiente pero
+	// el reasoning rara vez supera unos pocos KB por turn.
+	thinkingBuf string
 	// pendingReply guarda el chatReplyMsg cuando llega antes de que termine
 	// de drenarse deltaCh. El cierre del turn ocurre cuando AMBAS cosas
 	// pasaron (reply en mano y canal de deltas vacío). Sin esto, el reply
@@ -88,7 +96,7 @@ const (
 	inputChromeRows = 2  // bordes del marco del input (top + bottom)
 )
 
-func newModel(a *agent.Agent, sink *events.FanoutSink) model {
+func newModel(a *agent.Agent, sink *events.FanoutSink, rawStdout *os.File) model {
 	ta := textarea.New()
 	ta.Placeholder = "Escribí un mensaje o /skill ..."
 	ta.Focus()
@@ -107,13 +115,47 @@ func newModel(a *agent.Agent, sink *events.FanoutSink) model {
 	sp.Spinner = spinner.Dot
 
 	return model{
-		agent:    a,
-		sink:     sink,
-		state:    stateNormal,
-		viewport: vp,
-		input:    ta,
-		spinner:  sp,
+		agent:     a,
+		sink:      sink,
+		rawStdout: rawStdout,
+		state:     stateNormal,
+		viewport:  vp,
+		input:     ta,
+		spinner:   sp,
 	}
+}
+
+// dumpChatPlain imprime el chatView entero como texto plano en rawStdout.
+// Se usa cuando entramos a statePaused para que el usuario pueda
+// seleccionar y copiar con el mouse (el terminal scrollea normalmente
+// porque ya no estamos en alt-screen).
+func (m model) dumpChatPlain() {
+	if m.rawStdout == nil {
+		return
+	}
+	for _, l := range m.chatView {
+		var prefix string
+		switch l.kind {
+		case lineUser:
+			prefix = "you  "
+		case lineAssistant:
+			prefix = "aqua "
+		case lineTool:
+			prefix = "⚡   "
+		case lineError:
+			prefix = "✗   "
+		case lineSystem:
+			prefix = "·   "
+		case lineThinkingInProgress:
+			prefix = "· thinking\n"
+		case lineThinkingClosed:
+			prefix = "» thinking: "
+		}
+		// Si la línea tiene multilínea interna, indentamos las continuaciones.
+		text := strings.ReplaceAll(l.text, "\n", "\n     ")
+		m.rawStdout.WriteString(prefix + text + "\n")
+	}
+	m.rawStdout.WriteString("\n--- PAUSADO · seleccioná con mouse, copiá con Ctrl+Shift+C · pulsá Ctrl+P para volver ---\n")
 }
 
 // appendLine agrega una entrada al chatView y reflota el viewport hacia abajo.
@@ -144,7 +186,7 @@ func (m *model) addThinkingChunk(chunk string) {
 	if chunk == "" {
 		return
 	}
-	m.thinkingBuf.WriteString(chunk)
+	m.thinkingBuf += chunk
 	// Buscamos la línea in-progress del turn actual; si no existe, la creamos.
 	idx := -1
 	for i := len(m.chatView) - 1; i >= 0; i-- {
@@ -159,11 +201,11 @@ func (m *model) addThinkingChunk(chunk string) {
 	if idx == -1 {
 		m.chatView = append(m.chatView, chatLine{
 			kind: lineThinkingInProgress,
-			text: m.thinkingBuf.String(),
+			text: m.thinkingBuf,
 			time: time.Now(),
 		})
 	} else {
-		m.chatView[idx].text = m.thinkingBuf.String()
+		m.chatView[idx].text = m.thinkingBuf
 	}
 	m.refreshViewport()
 }
@@ -185,14 +227,14 @@ func (m *model) thinkingTransition() {
 	if idx == -1 {
 		return
 	}
-	snippet := strings.TrimSpace(m.thinkingBuf.String())
+	snippet := strings.TrimSpace(m.thinkingBuf)
 	if snippet == "" {
 		m.chatView = append(m.chatView[:idx], m.chatView[idx+1:]...)
 	} else {
 		m.chatView[idx].kind = lineThinkingClosed
 		m.chatView[idx].text = snippet
 	}
-	m.thinkingBuf.Reset()
+	m.thinkingBuf = ""
 	m.refreshViewport()
 }
 
@@ -200,8 +242,8 @@ func (m *model) thinkingTransition() {
 // el indicador "· pensando" por la línea colapsada "» thinking: <snippet>".
 // Si no hubo reasoning, simplemente borra el indicador si quedó vacío.
 func (m *model) closeThinking() {
-	snippet := collapseSnippet(m.thinkingBuf.String())
-	m.thinkingBuf.Reset()
+	snippet := collapseSnippet(m.thinkingBuf)
+	m.thinkingBuf = ""
 
 	// Buscamos el indicador del turn actual, hacia atrás hasta el último user.
 	idx := -1

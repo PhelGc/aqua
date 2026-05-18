@@ -35,6 +35,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// statePaused: cualquier tecla vuelve al alt-screen. Ctrl+C sigue
+		// saliendo del TUI por las dudas.
+		if m.state == statePaused {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.state = stateNormal
+			return m, tea.EnterAltScreen
+		}
+
+		// Ctrl+P entra a statePaused: sale del alt-screen y dumpea el chat
+		// como texto plano a stdout para que el usuario pueda seleccionar
+		// con mouse y copiar normalmente.
+		if msg.String() == "ctrl+p" {
+			m.state = statePaused
+			return m, tea.Sequence(
+				tea.ExitAltScreen,
+				func() tea.Msg {
+					m.dumpChatPlain()
+					return nil
+				},
+			)
+		}
+
 		// Modal abierto: las teclas van al modal, salvo ctrl+c global.
 		if m.state == stateSessionsModal {
 			if msg.String() == "ctrl+c" {
