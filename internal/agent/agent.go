@@ -186,9 +186,15 @@ func (a *Agent) HistoryLen() int {
 // Terminal puede seguir usando SendAndDispatch directamente porque su loop
 // es single-threaded.
 func (a *Agent) SendMain(ctx context.Context, sessionName, input string) (text, artifact string, err error) {
+	return a.SendMainStreaming(ctx, sessionName, input, nil)
+}
+
+// SendMainStreaming es SendMain con callback de delta. Usado por TUI para
+// renderizar respuesta y reasoning incrementalmente.
+func (a *Agent) SendMainStreaming(ctx context.Context, sessionName, input string, onDelta DeltaCallback) (text, artifact string, err error) {
 	a.historyMu.Lock()
 	defer a.historyMu.Unlock()
-	return a.SendAndDispatch(ctx, &a.history, sessionName, input)
+	return a.SendAndDispatchStreaming(ctx, &a.history, sessionName, input, onDelta)
 }
 
 // HistoryPtr devuelve un puntero al slice de historial para callers
