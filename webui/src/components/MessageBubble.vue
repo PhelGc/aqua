@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { ChatMessage } from '../types'
 
 const props = defineProps<{ message: ChatMessage }>()
 
-// Reasoning colapsado por default si hay content. Mientras el LLM todavía
-// está pensando (sin content aún), lo mostramos abierto.
+// Reasoning colapsado por default siempre. Si querés ver el razonamiento
+// en vivo o consultarlo después, clickeás el summary para expandirlo.
 const reasoningOpen = ref(false)
 const hasReasoning = computed(() => !!props.message.reasoning)
-const showReasoningExpanded = computed(
-  () => reasoningOpen.value || (!props.message.content && props.message.streaming),
-)
 </script>
 
 <template>
@@ -37,11 +34,12 @@ const showReasoningExpanded = computed(
       <span v-if="message.streaming" class="dot" />
     </div>
 
-    <!-- Reasoning colapsable encima del content. -->
+    <!-- Reasoning colapsable encima del content. Siempre cerrado por
+         default; el usuario lo expande con click si lo quiere ver. -->
     <details
       v-if="hasReasoning"
       class="thinking"
-      :open="showReasoningExpanded"
+      :open="reasoningOpen"
       @toggle="reasoningOpen = ($event.target as HTMLDetailsElement).open"
     >
       <summary>
