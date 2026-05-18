@@ -200,7 +200,11 @@ function dispatchSSEEvent(
   // El backend usa event-name; convertimos a discriminated union por type.
   switch (eventType) {
     case 'user':
-      onEvent({ type: 'user', text: String(payload.text ?? '') })
+      onEvent({
+        type: 'user',
+        text: String(payload.text ?? ''),
+        attachments: Array.isArray(payload.attachments) ? payload.attachments : undefined,
+      })
       break
     case 'delta':
       onEvent({

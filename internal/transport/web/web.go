@@ -221,8 +221,21 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// Echo del input crudo (la UI lo usa para mostrar el bubble del usuario).
-	send("user", map[string]any{"text": req.Text})
+	// Echo del input crudo + metadata de attachments. La UI usa esto para
+	// mostrar el bubble del usuario con su texto + chips de archivos.
+	// El contenido extraído NO va en el echo: ese se prepende al input que
+	// va al LLM (más abajo) pero queda invisible en la UI.
+	userPayload := map[string]any{"text": req.Text}
+	if len(req.Attachments) > 0 {
+		metas := make([]attachments.Meta, 0, len(req.Attachments))
+		for _, id := range req.Attachments {
+			if m, ok := s.atts.Lookup(id); ok {
+				metas = append(metas, m)
+			}
+		}
+		userPayload["attachments"] = metas
+	}
+	send("user", userPayload)
 
 	input := req.Text
 	if strings.HasPrefix(input, "/") {

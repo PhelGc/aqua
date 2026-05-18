@@ -61,6 +61,9 @@ export interface RuntimeEvent {
 export interface CommandEventUser {
   type: 'user'
   text: string
+  /** Metadata de los attachments del turn. La UI los renderiza como chips
+   *  bajo el bubble del usuario; el contenido extraído NO viene acá. */
+  attachments?: AttachmentMeta[]
 }
 
 export interface CommandEventDelta {
@@ -110,6 +113,8 @@ export interface ChatMessage {
   /** Contenido visible del mensaje. Para `assistant` se va concatenando con
    *  cada `delta.content`. Para `tool` es el nombre. Para `error` el mensaje. */
   content: string
+  /** Solo para `user`: archivos adjuntos del turn, renderizados como chips. */
+  attachments?: AttachmentMeta[]
   /** Solo para `assistant`: razonamiento acumulado en vivo (delta.reasoning).
    *  Cuando el turn cierra, este bloque queda colapsable. */
   reasoning?: string

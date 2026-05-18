@@ -56,6 +56,7 @@ function send(text: string, attachments: string[] = []) {
           id: newId(),
           role: 'user',
           content: evt.text,
+          attachments: evt.attachments,
         })
         break
 

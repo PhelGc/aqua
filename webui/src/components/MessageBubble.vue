@@ -50,6 +50,22 @@ const hasReasoning = computed(() => !!props.message.reasoning)
 
     <div v-if="message.content" class="content">{{ message.content }}</div>
 
+    <!-- Attachments del usuario como chips. El contenido extraído fue al
+         LLM en el prompt pero NO se muestra en la UI para no inundar el
+         bubble con tablas/texto largo. -->
+    <div v-if="message.attachments && message.attachments.length" class="attachments">
+      <span
+        v-for="att in message.attachments"
+        :key="att.id"
+        class="att-chip"
+        :title="`${att.name} · ${humanSize(att.size)}`"
+      >
+        <span class="att-icon">{{ kindIcon(att.kind) }}</span>
+        <span class="att-name">{{ att.name }}</span>
+        <span class="att-size">{{ humanSize(att.size) }}</span>
+      </span>
+    </div>
+
     <div v-if="message.artifact" class="artifact">
       <a :href="`/reports/${encodeURIComponent(artifactName(message.artifact))}`" target="_blank">
         📄 {{ artifactName(message.artifact) }}
@@ -65,6 +81,24 @@ const hasReasoning = computed(() => !!props.message.reasoning)
 export function artifactName(path: string): string {
   const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
   return idx >= 0 ? path.slice(idx + 1) : path
+}
+
+export function humanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+export function kindIcon(kind: string): string {
+  switch (kind) {
+    case 'xlsx': return '📊'
+    case 'csv':
+    case 'tsv': return '📋'
+    case 'pdf': return '📕'
+    case 'image': return '🖼'
+    case 'text': return '📄'
+    default: return '📎'
+  }
 }
 </script>
 
@@ -161,6 +195,35 @@ export function artifactName(path: string): string {
   color: var(--error);
   font-size: 13px;
   padding: 4px 0;
+}
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.att-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  max-width: 280px;
+}
+.att-icon { font-size: 14px; }
+.att-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.att-size {
+  color: var(--fg-dim);
+  font-size: 11px;
 }
 
 .artifact {
