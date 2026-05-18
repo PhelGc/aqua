@@ -32,8 +32,9 @@ type chatLine struct {
 type state int
 
 const (
-	stateNormal  state = iota
-	stateSending       // request en vuelo, input deshabilitado
+	stateNormal        state = iota
+	stateSending             // request en vuelo, input deshabilitado
+	stateSessionsModal       // modal abierto, input ignora teclas
 )
 
 type model struct {
@@ -50,6 +51,9 @@ type model struct {
 	// separado del history del agente para no leerlo mientras SendMain
 	// tiene el lock.
 	chatView []chatLine
+
+	// sessionsModal está poblado solo mientras state == stateSessionsModal.
+	sessionsModal sessionsModal
 }
 
 const (

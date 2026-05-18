@@ -15,7 +15,19 @@ func (m model) View() string {
 	footer := m.renderFooter()
 	body := m.viewport.View()
 	input := inputStyle.Render(m.input.View())
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
+	base := lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
+
+	if m.state == stateSessionsModal {
+		// Overlay del modal centrado sobre el chat. lipgloss.Place compone
+		// el modal sobre un fondo del tamaño de la pantalla, pero no preserva
+		// el contenido de abajo. Para no perder el chat, lo dejamos vacío
+		// detrás (efecto "tomar foco").
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			m.sessionsModal.view(m.width))
+	}
+
+	return base
 }
 
 func (m model) renderHeader() string {

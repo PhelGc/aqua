@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,9 +23,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Modal abierto: las teclas van al modal, salvo ctrl+c global.
+		if m.state == stateSessionsModal {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			var (
+				action modalAction
+				cmd    tea.Cmd
+			)
+			m.sessionsModal, action, cmd = m.sessionsModal.update(msg, m.agent)
+			switch action {
+			case modalActionClose:
+				m.state = stateNormal
+			case modalActionSwitched:
+				m.state = stateNormal
+				// Limpiamos la vista y mostramos cuántos mensajes trae la nueva.
+				m.chatView = nil
+				m.appendLine(lineSystem, fmt.Sprintf("sesión: %s · %d mensajes en disco",
+					m.agent.Sessions().Current(), m.agent.HistoryLen()))
+			}
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "ctrl+q":
 			return m, tea.Quit
+		case "ctrl+s":
+			if m.state == stateSending {
+				return m, nil
+			}
+			m.state = stateSessionsModal
+			m.sessionsModal = newSessionsModal(m.agent)
+			return m, nil
 		case "enter":
 			if m.state == stateSending {
 				return m, nil
