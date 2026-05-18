@@ -9,13 +9,12 @@ import (
 
 	"aqua/internal/agent"
 	"aqua/internal/transport/discord"
-	"aqua/internal/transport/terminal"
 	"aqua/internal/transport/tui"
 	"aqua/internal/transport/web"
 )
 
 func main() {
-	mode := flag.String("mode", "terminal", "interfaz: terminal | tui | discord | web")
+	mode := flag.String("mode", "tui", "interfaz: tui | discord | web")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -32,8 +31,6 @@ func main() {
 	defer a.Scheduler().Shutdown()
 
 	switch *mode {
-	case "terminal", "console":
-		terminal.Run(ctx, a)
 	case "tui":
 		if err := tui.Run(ctx, a); err != nil {
 			fmt.Fprintln(os.Stderr, "tui:", err)
@@ -50,7 +47,7 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: terminal | tui | discord | web)\n", *mode)
+		fmt.Fprintf(os.Stderr, "modo desconocido: %q (usar: tui | discord | web)\n", *mode)
 		os.Exit(1)
 	}
 }
