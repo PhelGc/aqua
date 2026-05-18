@@ -181,7 +181,7 @@ func (a *Agent) RunScheduled(ctx context.Context, sched *scheduler.Schedule) {
 	a.Emit("schedule_done", sched.ID, map[string]any{
 		"session_name": sessionName,
 		"artifact":     artifact,
-		"reply":        truncateForLog(reply, 200),
+		"reply":        TruncateForLog(reply, 200),
 		"elapsed":      elapsed.String(),
 	})
 
@@ -245,8 +245,10 @@ func firstNonEmpty(s ...string) string {
 	return ""
 }
 
-// truncateForLog acorta strings para logs, reemplazando newlines por espacios.
-func truncateForLog(s string, max int) string {
+// TruncateForLog acorta strings para logs, reemplazando newlines por espacios.
+// Exportada para que los transports puedan loggear inputs del usuario sin
+// reimplementar el helper.
+func TruncateForLog(s string, max int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) <= max {
 		return s

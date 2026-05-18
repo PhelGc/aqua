@@ -315,7 +315,7 @@ func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate
 	reqCtx, cancel := context.WithTimeout(context.Background(), discordRequestTimeout)
 	defer cancel()
 
-	fmt.Printf("discord slash: %s /%s %s\n", username, name, truncateForLog(input, 60))
+	fmt.Printf("discord slash: %s /%s %s\n", username, name, agent.TruncateForLog(input, 60))
 
 	reply, artifact, err := b.agent.SendAndDispatch(reqCtx, history, sessionName, rendered)
 	if err != nil {
@@ -489,7 +489,7 @@ func (b *bot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	ctx, cancel := context.WithTimeout(context.Background(), discordRequestTimeout)
 	defer cancel()
 
-	fmt.Printf("discord: %s → aqua: %s\n", m.Author.Username, truncateForLog(text, 80))
+	fmt.Printf("discord: %s → aqua: %s\n", m.Author.Username, agent.TruncateForLog(text, 80))
 
 	stopTyping := keepTyping(ctx, s, m.ChannelID)
 	defer stopTyping()
@@ -559,10 +559,3 @@ func splitForDiscord(text string, maxLen int) []string {
 	return out
 }
 
-func truncateForLog(s string, max int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "…"
-}
