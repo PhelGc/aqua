@@ -33,7 +33,7 @@ func (m model) renderFooter() string {
 	if m.state == stateSending {
 		hint = m.spinner.View() + " enviando…"
 	} else {
-		hint = "ctrl+c salir · enter enviar · shift+enter línea nueva"
+		hint = "ctrl+c salir · enter enviar · ctrl+j línea nueva"
 	}
 	return footerStyle.Width(m.width).Render(hint)
 }

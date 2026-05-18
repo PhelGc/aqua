@@ -60,13 +60,16 @@ const (
 
 func newModel(a *agent.Agent) model {
 	ta := textarea.New()
-	ta.Placeholder = "Escribí un mensaje o /skill ... (Enter envía · Shift+Enter línea nueva · Ctrl+C salir)"
+	ta.Placeholder = "Escribí un mensaje o /skill ... (Enter envía · Ctrl+J línea nueva · Ctrl+C salir)"
 	ta.Focus()
 	ta.Prompt = "> "
 	ta.CharLimit = 0 // sin límite
 	ta.SetHeight(inputHeight)
 	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
+	// Shift+Enter no es distinguible de Enter en la mayoría de terminales
+	// (no manda código separado). Usamos ctrl+j (LF universal) y alt+enter
+	// como alias para línea nueva.
+	ta.KeyMap.InsertNewline.SetKeys("ctrl+j", "alt+enter")
 
 	vp := viewport.New(0, 0) // dimensiones se setean al primer WindowSizeMsg
 

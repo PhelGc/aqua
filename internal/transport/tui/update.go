@@ -69,17 +69,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// submit añade la línea del usuario al chatView, limpia el input y dispara
-// SendMain en background. El timeout del request es generoso porque algunos
-// tool-loops pueden tardar varios minutos.
+// submit procesa la entrada del usuario:
+//   - slash commands builtin (/exit, /reset, /clear): se ejecutan localmente.
+//   - skills (/<nombre> [args]): se renderean y se mandan al agente.
+//   - texto plano: va al agente tal cual.
+//
+// En todos los casos limpia el input y muestra la línea del usuario.
 func (m model) submit(text string) (model, tea.Cmd) {
-	m.appendLine(lineUser, text)
 	m.input.Reset()
+
+	if strings.HasPrefix(text, "/") {
+		cmd, args, _ := strings.Cut(text[1:], " ")
+		args = strings.TrimSpace(args)
+		switch cmd {
+		case "exit", "quit":
+			return m, tea.Quit
+		case "reset":
+			if err := m.agent.Reset(); err != nil {
+				m.appendLine(lineError, "reset: "+err.Error())
+			} else {
+				m.appendLine(lineSystem, "historial limpio")
+			}
+			return m, nil
+		case "clear":
+			// /clear limpia solo la vista, no toca el historial real.
+			m.chatView = nil
+			m.viewport.SetContent(renderChat(m.chatView, m.viewport.Width))
+			return m, nil
+		default:
+			rendered, ok := m.agent.Skills().Render(cmd, args)
+			if !ok {
+				m.appendLine(lineError, "comando desconocido: /"+cmd)
+				return m, nil
+			}
+			m.appendLine(lineUser, text)
+			m.state = stateSending
+			return m, sendChat(context.Background(), m, rendered)
+		}
+	}
+
+	m.appendLine(lineUser, text)
 	m.state = stateSending
 	// Sin timeout duro: el agent ya tiene timeout interno por tool-call.
-	// Si querés tope global lo metemos después.
-	ctx := context.Background()
-	return m, sendChat(ctx, m, text)
+	return m, sendChat(context.Background(), m, text)
 }
 
 // layout calcula tamaños de viewport e input según width/height actuales.
