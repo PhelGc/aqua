@@ -1,0 +1,29 @@
+/* Reset mínimo + tema oscuro base. Estilos componentes-específicos viven
+   en sus respectivos .vue con <style scoped>. */
+:root {
+  color-scheme: dark;
+  --bg: #0f172a;
+  --bg-elev: #1e293b;
+  --fg: #e2e8f0;
+  --fg-dim: #94a3b8;
+  --accent: #7dd3fc;
+  --border: #334155;
+  --user: #a78bfa;
+  --error: #f87171;
+  --tool: #fbbf24;
+}
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html, body, #app {
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+.mono {
+  font-family: ui-monospace, 'JetBrains Mono', Consolas, monospace;
+}
