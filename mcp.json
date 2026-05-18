@@ -12,6 +12,23 @@
         "ATLASSIAN_USER_EMAIL": "${ATLASSIAN_USER_EMAIL}",
         "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
       }
+    },
+    "n8n": {
+      "command": "npx",
+      "args": ["-y", "@illuminaresolutions/n8n-mcp-server"],
+      "env": {
+        "N8N_HOST": "${N8N_HOST}",
+        "N8N_API_KEY": "${N8N_API_KEY}"
+      }
+    },
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--access-token",
+        "${SUPABASE_ACCESS_TOKEN}"
+      ]
     }
   }
 }
