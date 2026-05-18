@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"aqua/internal/agent"
+	"aqua/internal/attachments"
 	"aqua/internal/events"
 	"aqua/internal/llm"
 )
@@ -33,6 +34,7 @@ const (
 type webServer struct {
 	agent *agent.Agent
 	sink  *events.FanoutSink
+	atts  *attachments.Store
 	mu    sync.Mutex
 	busy  bool
 }
@@ -47,7 +49,12 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	sink := events.NewFanout(webEventBuffer, webHistoryMaxLen)
 	a.SetEvents(sink)
 
-	s := &webServer{agent: a, sink: sink}
+	atts, err := attachments.New(attachments.DefaultDir)
+	if err != nil {
+		return fmt.Errorf("inicializando attachments: %w", err)
+	}
+
+	s := &webServer{agent: a, sink: sink, atts: atts}
 
 	mux := http.NewServeMux()
 
@@ -64,6 +71,7 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	mux.HandleFunc("/api/sessions/new", s.handleSessionsNew)      // POST {name}
 	mux.HandleFunc("/api/sessions/switch", s.handleSessionsSwitch) // POST {name}
 	mux.HandleFunc("/api/sessions/", s.handleSessionsItem)         // DELETE /api/sessions/<name>
+	mux.HandleFunc("/upload", s.handleUpload)                      // POST multipart
 
 	server := &http.Server{
 		Addr:    addr,
@@ -143,7 +151,8 @@ func writeSSE(w http.ResponseWriter, evt events.Event) {
 }
 
 type commandReq struct {
-	Text string `json:"text"`
+	Text        string   `json:"text"`
+	Attachments []string `json:"attachments,omitempty"` // IDs de uploads previos
 }
 
 // handleCommand procesa un input del usuario y devuelve el resultado como un
@@ -170,7 +179,7 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Text = strings.TrimSpace(req.Text)
-	if req.Text == "" {
+	if req.Text == "" && len(req.Attachments) == 0 {
 		http.Error(w, "texto vacío", http.StatusBadRequest)
 		return
 	}
@@ -242,6 +251,28 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Prepend de los attachments al input. Cada uno se extrae a markdown
+	// (tabla para xlsx/csv, texto para pdf/txt). Si la extracción falla,
+	// metemos un placeholder con el error para que el LLM no tenga que
+	// adivinar y el usuario sepa qué pasó.
+	if len(req.Attachments) > 0 {
+		var attBlock strings.Builder
+		for _, id := range req.Attachments {
+			text, err := s.atts.Extract(id)
+			if err != nil {
+				fmt.Fprintf(&attBlock, "[error leyendo attachment %s: %v]\n\n", id, err)
+				continue
+			}
+			attBlock.WriteString(text)
+			attBlock.WriteString("\n")
+		}
+		if input == "" {
+			input = attBlock.String()
+		} else {
+			input = attBlock.String() + "\n---\n\n" + input
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
 	defer cancel()
 
@@ -294,6 +325,45 @@ func (s *webServer) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	http.ServeFile(w, r, path)
+}
+
+// handleUpload recibe uno o más archivos en multipart/form-data (campo "file")
+// y los guarda en el Store. Devuelve un array de Meta como JSON.
+//
+// Tope global: MaxFilesPerBatch archivos por request; MaxBytesPerFile por
+// cada uno (validado dentro de SaveMultipart).
+func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	// Limit del body completo: tope por archivo × cantidad + slack.
+	r.Body = http.MaxBytesReader(w, r.Body,
+		int64(attachments.MaxBytesPerFile)*int64(attachments.MaxFilesPerBatch)+1024*1024)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "multipart inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	files := r.MultipartForm.File["file"]
+	if len(files) == 0 {
+		http.Error(w, "sin archivos (campo esperado: file)", http.StatusBadRequest)
+		return
+	}
+	if len(files) > attachments.MaxFilesPerBatch {
+		http.Error(w, fmt.Sprintf("máximo %d archivos por upload", attachments.MaxFilesPerBatch), http.StatusBadRequest)
+		return
+	}
+	results := make([]attachments.Meta, 0, len(files))
+	for _, fh := range files {
+		m, err := s.atts.SaveMultipart(fh)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		results = append(results, m)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(results)
 }
 
 // safeReportPath valida que rel apunte a un archivo .md dentro de baseDir.

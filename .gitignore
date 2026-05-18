@@ -31,6 +31,9 @@ aqua-*.log
 # Tareas programadas (estado local)
 /schedules/
 
+# Archivos subidos por el usuario via UI web
+/uploads/
+
 # Memoria persistente local
 memory.md
 
