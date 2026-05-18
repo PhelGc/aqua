@@ -14,8 +14,7 @@
       }
     },
     "http": {
-      "command": "npx",
-      "args": ["-y", "@mcp-apps/api-tools-mcp-server"]
+      "command": "aqua-http-mcp.exe"
     },
     "supabase": {
       "command": "npx",
