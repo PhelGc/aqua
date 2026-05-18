@@ -1,5 +1,6 @@
 # Binarios
 *.exe
+*.exe~
 /aqua
 
 # Secretos / entorno
