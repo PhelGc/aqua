@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 
 	"aqua/internal/agent"
+	"aqua/internal/events"
 )
 
 // lineKind clasifica una entrada del chat para renderizar con prefix/color.
@@ -38,10 +39,12 @@ const (
 )
 
 type model struct {
-	agent  *agent.Agent
-	width  int
-	height int
-	state  state
+	agent   *agent.Agent
+	sink    *events.FanoutSink
+	eventCh <-chan events.Event // canal del subscriber, set en Init
+	width   int
+	height  int
+	state   state
 
 	viewport viewport.Model
 	input    textarea.Model
@@ -62,7 +65,7 @@ const (
 	inputHeight  = 3 // textarea de 1-3 líneas
 )
 
-func newModel(a *agent.Agent) model {
+func newModel(a *agent.Agent, sink *events.FanoutSink) model {
 	ta := textarea.New()
 	ta.Placeholder = "Escribí un mensaje o /skill ... (Enter envía · Ctrl+J línea nueva · Ctrl+C salir)"
 	ta.Focus()
@@ -82,6 +85,7 @@ func newModel(a *agent.Agent) model {
 
 	return model{
 		agent:    a,
+		sink:     sink,
 		state:    stateNormal,
 		viewport: vp,
 		input:    ta,

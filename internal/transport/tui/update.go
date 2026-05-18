@@ -6,10 +6,21 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"aqua/internal/events"
 )
 
+// initEventLoopMsg se manda una sola vez al arrancar para que el Update
+// pueda suscribirse al sink (necesita modificar el modelo, cosa que Init no
+// puede hacer porque devuelve solo un Cmd).
+type initEventLoopMsg struct{}
+
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.input.Focus())
+	return tea.Batch(
+		m.spinner.Tick,
+		m.input.Focus(),
+		func() tea.Msg { return initEventLoopMsg{} },
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -66,6 +77,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.submit(text)
 		}
+
+	case initEventLoopMsg:
+		ch, _, _ := m.sink.Subscribe()
+		m.eventCh = ch
+		return m, waitForEvent(ch)
+
+	case eventMsg:
+		// Re-encolar la espera del próximo evento. Si el canal se cerró
+		// (m.eventCh == nil), no reagendar.
+		var next tea.Cmd
+		if m.eventCh != nil {
+			next = waitForEvent(m.eventCh)
+		}
+		if line, ok := renderEvent(events.Event(msg)); ok {
+			m.appendLine(lineTool, line)
+		}
+		return m, next
 
 	case chatReplyMsg:
 		m.state = stateNormal

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"aqua/internal/events"
 )
 
 func (m model) View() string {
@@ -69,6 +71,94 @@ func renderChat(lines []chatLine, width int) string {
 		sb.WriteString(renderLine(l, inner))
 	}
 	return sb.String()
+}
+
+// renderEvent traduce un Event a una línea para el viewport. Devuelve
+// (text, false) cuando el evento no aporta nada visual (ej. job_start
+// silencioso). El llamador decide qué hacer si !ok.
+//
+// Mapeo:
+//   tool_call          → "<jobId> tool_name" (jobId vacío = agente principal)
+//   schedule_fired     → "schedule X disparado"
+//   schedule_done      → "schedule X terminado en Xs"
+//   schedule_error     → "schedule X falló: ..."
+//   schedule_created   → "schedule X programado"
+//   schedule_cancelled → "schedule X cancelado"
+//   orch_start         → "orch: N jobs · pool=K"
+//   orch_done          → "orch: M/N ok · artifact"
+//   job_done           → "<jobId> ok/fail (Ns)"
+//   job_start          → omitido (ruidoso)
+//   chat_*             → omitidos (la TUI ya los muestra como user/assistant)
+func renderEvent(evt events.Event) (string, bool) {
+	switch evt.Type {
+	case "tool_call":
+		tool, _ := evt.Payload["tool"].(string)
+		if evt.JobID != "" {
+			return fmt.Sprintf("[%s] %s", evt.JobID, tool), true
+		}
+		return tool, true
+
+	case "schedule_fired":
+		label, _ := evt.Payload["label"].(string)
+		if label == "" {
+			label, _ = evt.Payload["command"].(string)
+		}
+		return fmt.Sprintf("schedule %s disparado: %s", evt.JobID, label), true
+
+	case "schedule_done":
+		elapsed, _ := evt.Payload["elapsed"].(string)
+		return fmt.Sprintf("schedule %s ok (%s)", evt.JobID, elapsed), true
+
+	case "schedule_error":
+		errMsg, _ := evt.Payload["error"].(string)
+		return fmt.Sprintf("schedule %s falló: %s", evt.JobID, errMsg), true
+
+	case "schedule_created":
+		label, _ := evt.Payload["label"].(string)
+		return fmt.Sprintf("schedule %s programado: %s", evt.JobID, label), true
+
+	case "schedule_cancelled":
+		return fmt.Sprintf("schedule %s cancelado", evt.JobID), true
+
+	case "orch_start":
+		total, _ := evt.Payload["total"].(int)
+		poolSize, _ := evt.Payload["pool_size"].(int)
+		// total/poolSize pueden venir como float64 si vinieron de JSON;
+		// los eventos en este código son map[string]any directo, así que
+		// el cast a int debería andar — fallback igual.
+		if total == 0 {
+			if f, ok := evt.Payload["total"].(float64); ok {
+				total = int(f)
+			}
+		}
+		if poolSize == 0 {
+			if f, ok := evt.Payload["pool_size"].(float64); ok {
+				poolSize = int(f)
+			}
+		}
+		return fmt.Sprintf("orch start · %d jobs · pool=%d", total, poolSize), true
+
+	case "orch_done":
+		ok, _ := evt.Payload["ok"].(int)
+		fail, _ := evt.Payload["fail"].(int)
+		artifact, _ := evt.Payload["artifact"].(string)
+		base := fmt.Sprintf("orch done · %d ok · %d fail", ok, fail)
+		if artifact != "" {
+			base += " · " + artifact
+		}
+		return base, true
+
+	case "job_done":
+		elapsedMs, _ := evt.Payload["elapsed_ms"].(int64)
+		success, _ := evt.Payload["success"].(bool)
+		status := "ok"
+		if !success {
+			status = "fail"
+		}
+		return fmt.Sprintf("[%s] %s (%dms)", evt.JobID, status, elapsedMs), true
+	}
+
+	return "", false
 }
 
 func renderLine(l chatLine, width int) string {
