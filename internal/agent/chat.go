@@ -15,12 +15,19 @@ import (
 
 // Send envía un mensaje del usuario y devuelve la respuesta del modelo.
 // Hace rollback de history en caso de error (salvo si se agotaron iteraciones
-// de tools, donde dejamos el progreso parcial).
+// de tools, donde dejamos el progreso parcial). Equivalente a SendStreaming
+// con onDelta=nil; mantenida para callers que no necesitan stream.
 func (a *Agent) Send(ctx context.Context, history *[]llm.Message, sessionName, userInput string) (string, error) {
+	return a.SendStreaming(ctx, history, sessionName, userInput, nil)
+}
+
+// SendStreaming es como Send pero invoca onDelta por cada fragmento que
+// llega del LLM. Si onDelta es nil, no pide stream al endpoint.
+func (a *Agent) SendStreaming(ctx context.Context, history *[]llm.Message, sessionName, userInput string, onDelta DeltaCallback) (string, error) {
 	checkpoint := len(*history)
 	*history = append(*history, llm.Message{Role: "user", Content: userInput})
 
-	reply, err := a.RunConversation(ctx, history)
+	reply, err := a.RunConversationStreaming(ctx, history, onDelta)
 	if err != nil {
 		if !errors.Is(err, errMaxToolIterations) {
 			*history = (*history)[:checkpoint]
@@ -41,7 +48,13 @@ func (a *Agent) Send(ctx context.Context, history *[]llm.Message, sessionName, u
 // Cuando dispatcha, el último mensaje del assistant en *history se reemplaza
 // por el texto consolidado para que el LLM no vuelva a ver su propio marker.
 func (a *Agent) SendAndDispatch(ctx context.Context, history *[]llm.Message, sessionName, userInput string) (text, artifact string, err error) {
-	reply, err := a.Send(ctx, history, sessionName, userInput)
+	return a.SendAndDispatchStreaming(ctx, history, sessionName, userInput, nil)
+}
+
+// SendAndDispatchStreaming es como SendAndDispatch pero invoca onDelta por
+// cada fragmento del LLM (útil para TUI con feedback en vivo).
+func (a *Agent) SendAndDispatchStreaming(ctx context.Context, history *[]llm.Message, sessionName, userInput string, onDelta DeltaCallback) (text, artifact string, err error) {
+	reply, err := a.SendStreaming(ctx, history, sessionName, userInput, onDelta)
 	if err != nil {
 		return "", "", err
 	}
@@ -76,12 +89,18 @@ func (a *Agent) SendAndDispatch(ctx context.Context, history *[]llm.Message, ses
 }
 
 // RunConversation ejecuta el loop de chat hasta que el modelo deja de pedir tools
-// o se alcanza maxToolIters(). Modifica *history (append-only) pero no
-// persiste sesión ni hace rollback. Reusable por workers del orquestador.
+// o se alcanza maxToolIters(). Equivalente a RunConversationStreaming con
+// onDelta=nil; mantenida para workers del orquestador.
+func (a *Agent) RunConversation(ctx context.Context, history *[]llm.Message) (string, error) {
+	return a.RunConversationStreaming(ctx, history, nil)
+}
+
+// RunConversationStreaming es como RunConversation pero invoca onDelta por
+// cada fragmento del LLM. Si onDelta es nil usa callAPI plano (sin stream).
 //
 // La memoria persistente (memory.md) se lee una vez por llamada para que cambios
 // hechos por aqua en turnos anteriores queden visibles.
-func (a *Agent) RunConversation(ctx context.Context, history *[]llm.Message) (string, error) {
+func (a *Agent) RunConversationStreaming(ctx context.Context, history *[]llm.Message, onDelta DeltaCallback) (string, error) {
 	limit := maxToolIters()
 	mem, _ := memory.Load()
 	for i := 0; i < limit; i++ {
@@ -97,7 +116,15 @@ func (a *Agent) RunConversation(ctx context.Context, history *[]llm.Message) (st
 			msgs = append(systems, *history...)
 		}
 
-		reply, err := a.callAPI(ctx, msgs)
+		var (
+			reply *llm.Message
+			err   error
+		)
+		if onDelta != nil {
+			reply, err = a.callAPIStream(ctx, msgs, onDelta)
+		} else {
+			reply, err = a.callAPI(ctx, msgs)
+		}
 		if err != nil {
 			return "", err
 		}
