@@ -1,6 +1,11 @@
 # Binarios
 *.exe
+*.exe~
 /aqua
+
+# Logs locales y dumps
+aqua-*.log
+*.dmp
 
 # Secretos / entorno
 .env

@@ -17,6 +17,7 @@ import (
 
 	"aqua/internal/agent"
 	"aqua/internal/events"
+	"aqua/internal/llm"
 )
 
 //go:embed assets/*
@@ -141,6 +142,19 @@ type commandReq struct {
 	Text string `json:"text"`
 }
 
+// handleCommand procesa un input del usuario y devuelve el resultado como un
+// stream SSE. Tipos de eventos:
+//
+//	event: user      → echo del texto crudo del usuario
+//	event: delta     → {content?, reasoning?} chunk del LLM
+//	event: tool      → {name} cada vez que el agente invoca una tool MCP
+//	event: error     → {message} algo falló (también incluido en done si aplica)
+//	event: done      → {text, artifact} respuesta consolidada del turno
+//	event: system    → {text} mensajes de sistema (reset, skill desconocida)
+//
+// Para slash commands locales (/reset, builtins) se responde solo con `system`
+// y `done` sin tocar al LLM. Para skills (/<nombre>) se renderiza y se manda
+// al agente como input.
 func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -165,6 +179,36 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	s.busy = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.busy = false
+		s.mu.Unlock()
+	}()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming no soportado", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	send := func(eventType string, payload any) bool {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, data); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// Echo del input crudo (la UI lo usa para mostrar el bubble del usuario).
+	send("user", map[string]any{"text": req.Text})
 
 	input := req.Text
 	if strings.HasPrefix(input, "/") {
@@ -172,57 +216,60 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		args = strings.TrimSpace(args)
 		switch cmd {
 		case "reset":
-			_ = s.agent.Reset()
-			s.sink.Publish(events.Event{Type: "chat_system", Time: time.Now(), Payload: map[string]any{"text": "(historial limpio)"}})
-			s.mu.Lock()
-			s.busy = false
-			s.mu.Unlock()
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"ok":true}`))
+			if err := s.agent.Reset(); err != nil {
+				send("error", map[string]any{"message": "reset: " + err.Error()})
+			} else {
+				send("system", map[string]any{"text": "(historial limpio)"})
+			}
+			send("done", map[string]any{"text": "", "artifact": ""})
+			return
+		case "exit", "quit":
+			send("error", map[string]any{"message": "/" + cmd + " no aplica en la UI web"})
+			send("done", map[string]any{"text": "", "artifact": ""})
 			return
 		default:
-			if rendered, ok := s.agent.Skills().Render(cmd, args); ok {
-				input = rendered
+			rendered, found := s.agent.Skills().Render(cmd, args)
+			if !found {
+				send("error", map[string]any{"message": "comando desconocido: /" + cmd})
+				send("done", map[string]any{"text": "", "artifact": ""})
+				return
 			}
+			input = rendered
 		}
 	}
 
-	s.sink.Publish(events.Event{
-		Type:    "chat_user",
-		Time:    time.Now(),
-		Payload: map[string]any{"text": req.Text},
-	})
+	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
+	defer cancel()
 
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"ok":true}`))
-
-	go func() {
-		defer func() {
-			s.mu.Lock()
-			s.busy = false
-			s.mu.Unlock()
-		}()
-		ctx, cancel := context.WithTimeout(context.Background(), webRequestTimeout)
-		defer cancel()
-		reply, artifact, err := s.agent.SendMain(ctx, s.agent.Sessions().Current(), input)
-		if err != nil {
-			s.sink.Publish(events.Event{
-				Type:    "chat_error",
-				Time:    time.Now(),
-				Payload: map[string]any{"error": err.Error()},
-			})
+	// Filtramos chunks vacíos (delta sin content ni reasoning) para no
+	// inundar la UI con eventos no-op.
+	onDelta := func(d llm.StreamDelta) {
+		if d.Content == "" && d.ReasoningContent == "" {
+			// Tool-call: emitir uno por cada tool en el delta.
+			for _, tc := range d.ToolCalls {
+				if tc.Function.Name != "" {
+					send("tool", map[string]any{"name": tc.Function.Name})
+				}
+			}
 			return
 		}
-		payload := map[string]any{"text": reply}
-		if artifact != "" {
-			payload["artifact"] = artifact
+		out := map[string]any{}
+		if d.Content != "" {
+			out["content"] = d.Content
 		}
-		s.sink.Publish(events.Event{
-			Type:    "chat_assistant",
-			Time:    time.Now(),
-			Payload: payload,
-		})
-	}()
+		if d.ReasoningContent != "" {
+			out["reasoning"] = d.ReasoningContent
+		}
+		send("delta", out)
+	}
+
+	text, artifact, err := s.agent.SendMainStreaming(ctx, s.agent.Sessions().Current(), input, onDelta)
+	if err != nil {
+		send("error", map[string]any{"message": err.Error()})
+		send("done", map[string]any{"text": "", "artifact": ""})
+		return
+	}
+	send("done", map[string]any{"text": text, "artifact": artifact})
 }
 
 // handleReport sirve archivos dentro de reports/ con protección contra path traversal.
