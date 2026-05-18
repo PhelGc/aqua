@@ -36,6 +36,7 @@ type ChatRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
+	Stream   bool      `json:"stream,omitempty"`
 }
 
 type ChatResponse struct {
@@ -46,4 +47,40 @@ type ChatResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+// StreamChunk es un evento individual del stream SSE de /chat/completions.
+// Cada uno trae deltas incrementales del mensaje en construcción.
+type StreamChunk struct {
+	Choices []struct {
+		Delta        StreamDelta `json:"delta"`
+		FinishReason string      `json:"finish_reason,omitempty"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// StreamDelta es el incremento de un chunk: texto nuevo del content, del
+// reasoning, o de tool-calls. El role solo viene en el primer chunk.
+type StreamDelta struct {
+	Role             string                `json:"role,omitempty"`
+	Content          string                `json:"content,omitempty"`
+	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	ToolCalls        []StreamToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// StreamToolCallDelta es un fragmento de un tool-call. El primer chunk de
+// cada tool-call trae index+id+function.name; los siguientes incrementan
+// function.arguments. El caller agrupa por Index.
+type StreamToolCallDelta struct {
+	Index    int                       `json:"index"`
+	ID       string                    `json:"id,omitempty"`
+	Type     string                    `json:"type,omitempty"`
+	Function StreamToolCallFuncDelta   `json:"function,omitempty"`
+}
+
+type StreamToolCallFuncDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
