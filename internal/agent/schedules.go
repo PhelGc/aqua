@@ -197,12 +197,9 @@ func (a *Agent) RunScheduled(ctx context.Context, sched *scheduler.Schedule) {
 	a.notifySchedule(ctx, sched, msg.String(), artifact)
 }
 
-// notifySchedule envía notificación al webhook configurado (no-op si no hay).
-// Errores de notificación se loggean pero no abortan el flujo del scheduler.
+// notifySchedule envía notificación al notifier configurado (noop si no hay
+// webhook). Errores de notificación se loggean pero no abortan el flujo.
 func (a *Agent) notifySchedule(ctx context.Context, sched *scheduler.Schedule, message, attachment string) {
-	if a.notifier == nil {
-		return
-	}
 	notifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := a.notifier.Notify(notifyCtx, message, notifier.Opts{

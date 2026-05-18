@@ -39,18 +39,24 @@ type discordWebhook struct {
 	client *http.Client
 }
 
-// NewDiscordWebhook devuelve un notifier si DISCORD_NOTIFY_WEBHOOK
-// está seteada; si no, devuelve nil (sin error: la feature es opcional).
+// NewDiscordWebhook devuelve un notifier que postea a DISCORD_NOTIFY_WEBHOOK.
+// Si la env var está vacía devuelve un noop notifier (no nil) para que los
+// callers no tengan que chequear nil antes de cada Notify.
 func NewDiscordWebhook() Notifier {
 	url := os.Getenv("DISCORD_NOTIFY_WEBHOOK")
 	if url == "" {
-		return nil
+		return noop{}
 	}
 	return &discordWebhook{
 		url:    url,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
+
+// noop es el null-object de Notifier: descarta los mensajes silenciosamente.
+type noop struct{}
+
+func (noop) Notify(context.Context, string, Opts) error { return nil }
 
 func (n *discordWebhook) Notify(ctx context.Context, message string, opts Opts) error {
 	chunks := splitForWebhook(message)
