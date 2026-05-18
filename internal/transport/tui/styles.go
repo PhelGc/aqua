@@ -29,7 +29,10 @@ var (
 			BorderTop(true).
 			BorderForeground(colorBorder)
 
-	inputStyle = lipgloss.NewStyle().Padding(0, 1)
+	inputStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(colorBorder).
+			Padding(0, 0)
 
 	userPrefix = lipgloss.NewStyle().Bold(true).Foreground(colorYou).Render("you ")
 	aquaPrefix = lipgloss.NewStyle().Bold(true).Foreground(colorAqua).Render("aqua ")

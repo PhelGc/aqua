@@ -57,21 +57,27 @@ type model struct {
 
 	// sessionsModal está poblado solo mientras state == stateSessionsModal.
 	sessionsModal sessionsModal
+
+	// completion es el popup de autocomplete de slash commands. Vive sobre
+	// el input cuando el contenido empieza con "/".
+	completion completion
 }
 
 const (
-	headerHeight = 2 // título + borde
-	footerHeight = 2 // hint + borde
-	inputHeight  = 3 // textarea de 1-3 líneas
+	headerHeight    = 2  // título + borde
+	footerHeight    = 2  // hint + borde
+	inputMinHeight  = 1  // 1 línea visible cuando está vacío
+	inputMaxHeight  = 10 // tope antes de que aparezca scroll interno del textarea
+	inputChromeRows = 2  // bordes del marco del input (top + bottom)
 )
 
 func newModel(a *agent.Agent, sink *events.FanoutSink) model {
 	ta := textarea.New()
-	ta.Placeholder = "Escribí un mensaje o /skill ... (Enter envía · Ctrl+J línea nueva · Ctrl+C salir)"
+	ta.Placeholder = "Escribí un mensaje o /skill ..."
 	ta.Focus()
-	ta.Prompt = "> "
+	ta.Prompt = "│ "
 	ta.CharLimit = 0 // sin límite
-	ta.SetHeight(inputHeight)
+	ta.SetHeight(inputMinHeight)
 	ta.ShowLineNumbers = false
 	// Shift+Enter no es distinguible de Enter en la mayoría de terminales
 	// (no manda código separado). Usamos ctrl+j (LF universal) y alt+enter
@@ -94,8 +100,13 @@ func newModel(a *agent.Agent, sink *events.FanoutSink) model {
 }
 
 // appendLine agrega una entrada al chatView y reflota el viewport hacia abajo.
+// Si todavía no recibimos WindowSizeMsg (Width == 0), guardamos la línea y
+// el primer layout() la renderizará con el ancho correcto.
 func (m *model) appendLine(kind lineKind, text string) {
 	m.chatView = append(m.chatView, chatLine{kind: kind, text: text, time: time.Now()})
+	if m.viewport.Width == 0 {
+		return
+	}
 	m.viewport.SetContent(renderChat(m.chatView, m.viewport.Width))
 	m.viewport.GotoBottom()
 }

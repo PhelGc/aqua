@@ -67,7 +67,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateSessionsModal
 			m.sessionsModal = newSessionsModal(m.agent)
 			return m, nil
-		case "enter":
+		}
+
+		// Si el popup de completion está abierto, interceptamos las teclas
+		// de navegación antes de que lleguen al textarea o al submit.
+		if m.completion.visible {
+			switch msg.String() {
+			case "up":
+				m.completion.move(-1)
+				return m, nil
+			case "down":
+				m.completion.move(1)
+				return m, nil
+			case "tab", "enter":
+				sel := m.completion.selected()
+				m.input.SetValue("/" + sel.name + " ")
+				m.input.CursorEnd()
+				m.completion.refresh(m.input.Value(), m.agent)
+				m.layout()
+				return m, nil
+			case "esc":
+				m.completion.visible = false
+				return m, nil
+			}
+		}
+
+		// Enter sin popup → submit normal.
+		if msg.String() == "enter" {
 			if m.state == stateSending {
 				return m, nil
 			}
@@ -116,9 +142,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, spCmd = m.spinner.Update(msg)
 		cmds = append(cmds, spCmd)
 	} else {
+		prevLines := m.input.LineCount()
 		var inCmd tea.Cmd
 		m.input, inCmd = m.input.Update(msg)
 		cmds = append(cmds, inCmd)
+		// Si la cantidad de líneas cambió, recomputamos layout para que el
+		// input crezca/decrezca y el viewport se ajuste.
+		if m.input.LineCount() != prevLines {
+			m.layout()
+		}
+		// Refresh del popup de slash-commands tras cada tecla.
+		m.completion.refresh(m.input.Value(), m.agent)
 	}
 
 	var vpCmd tea.Cmd
@@ -136,6 +170,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // En todos los casos limpia el input y muestra la línea del usuario.
 func (m model) submit(text string) (model, tea.Cmd) {
 	m.input.Reset()
+	m.layout() // input vuelve a su altura mínima tras vaciar
 
 	if strings.HasPrefix(text, "/") {
 		cmd, args, _ := strings.Cut(text[1:], " ")
@@ -174,14 +209,28 @@ func (m model) submit(text string) (model, tea.Cmd) {
 }
 
 // layout calcula tamaños de viewport e input según width/height actuales.
+// El input crece con el contenido (entre inputMinHeight e inputMaxHeight);
+// el viewport se queda con lo que sobre arriba.
 func (m *model) layout() {
-	vpHeight := m.height - headerHeight - footerHeight - inputHeight
+	// Altura interna del textarea según líneas actuales (cuenta wrap).
+	contentLines := m.input.LineCount()
+	if contentLines < inputMinHeight {
+		contentLines = inputMinHeight
+	}
+	if contentLines > inputMaxHeight {
+		contentLines = inputMaxHeight
+	}
+	m.input.SetHeight(contentLines)
+
+	inputBlockHeight := contentLines + inputChromeRows
+	vpHeight := m.height - headerHeight - footerHeight - inputBlockHeight
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
 	m.viewport.Width = m.width
 	m.viewport.Height = vpHeight
-	m.input.SetWidth(m.width)
+	// Restamos el chrome (bordes) del ancho disponible para el textarea.
+	m.input.SetWidth(m.width - inputChromeRows)
 	// Re-render del chat ahora que sabemos el ancho.
 	m.viewport.SetContent(renderChat(m.chatView, m.width))
 	m.viewport.GotoBottom()

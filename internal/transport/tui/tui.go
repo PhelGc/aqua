@@ -21,6 +21,9 @@ import (
 // event sink. Trade-off: si algo paniquea no vamos a ver el stack — si esto
 // se vuelve un problema, redirigir stderr a un archivo log opcional.
 func Run(ctx context.Context, a *agent.Agent) error {
+	// Guardamos el TTY original para pasárselo explícitamente a Bubble Tea.
+	// Si redirigíamos os.Stdout sin esto, Bubble Tea heredaba el /dev/null y
+	// renderizaba a la nada → pantalla negra.
 	origStdout, origStderr := os.Stdout, os.Stderr
 	silenced, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err == nil {
@@ -39,7 +42,11 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	a.SetEvents(sink)
 
 	m := newModel(a, sink)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
+	p := tea.NewProgram(m,
+		tea.WithAltScreen(),
+		tea.WithContext(ctx),
+		tea.WithOutput(origStdout), // forzar render al TTY real, no al NUL
+	)
 	_, err = p.Run()
 	return err
 }

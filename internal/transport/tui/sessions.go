@@ -252,15 +252,24 @@ func createSession(a *agent.Agent, name string) error {
 	return nil
 }
 
-// view renderiza el modal como un bloque centrado. width es el ancho de la
-// pantalla; el modal toma ~60 chars o lo que entre.
-func (sm sessionsModal) view(width int) string {
+// view renderiza el modal como un bloque centrado. width/height son las
+// dimensiones de la pantalla; el modal se acota a ~60 cols pero más chico
+// si la terminal no llega, y scrollea verticalmente cuando hay más sesiones
+// que filas disponibles.
+func (sm sessionsModal) view(width, height int) string {
 	w := 60
 	if width < w+4 {
 		w = width - 4
 	}
 	if w < 30 {
 		w = 30
+	}
+
+	// Reservamos espacio para título, separadores, hint y borde:
+	// título (1) + blank (1) + blank-before-hint (1) + hint (1-3 líneas) + borde (2) + padding (2) ≈ 10.
+	maxListRows := height - 10
+	if maxListRows < 3 {
+		maxListRows = 3
 	}
 
 	var body strings.Builder
@@ -270,19 +279,42 @@ func (sm sessionsModal) view(width int) string {
 	if len(sm.items) == 0 {
 		body.WriteString(mutedStyle.Render("(sin sesiones guardadas)"))
 	} else {
-		for i, it := range sm.items {
+		// Ventana visible alrededor del cursor cuando la lista no entra entera.
+		start, end := 0, len(sm.items)
+		if len(sm.items) > maxListRows {
+			start = sm.cursor - maxListRows/2
+			if start < 0 {
+				start = 0
+			}
+			if start+maxListRows > len(sm.items) {
+				start = len(sm.items) - maxListRows
+			}
+			end = start + maxListRows
+		}
+		// Ancho útil del item (descontando padding del modal + borde).
+		itemNameW := w - 14
+		if itemNameW < 10 {
+			itemNameW = 10
+		}
+		for i := start; i < end; i++ {
+			it := sm.items[i]
 			marker := "  "
 			if it.name == sm.current {
 				marker = "* "
 			}
-			line := fmt.Sprintf("%s%-30s %s",
-				marker, truncate(it.name, 30), countLabel(it.messages))
+			line := fmt.Sprintf("%s%-*s %s",
+				marker, itemNameW, truncate(it.name, itemNameW), countLabel(it.messages))
 			if i == sm.cursor && sm.mode == sessModeBrowse {
 				line = modalCursorStyle.Render(line)
 			} else {
 				line = modalItemStyle.Render(line)
 			}
 			body.WriteString(line)
+			body.WriteString("\n")
+		}
+		// Indicador "hay más arriba/abajo" si la lista está scrolleada.
+		if start > 0 || end < len(sm.items) {
+			body.WriteString(mutedStyle.Render(fmt.Sprintf("(mostrando %d-%d de %d)", start+1, end, len(sm.items))))
 			body.WriteString("\n")
 		}
 	}

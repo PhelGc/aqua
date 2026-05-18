@@ -9,15 +9,40 @@ import (
 	"aqua/internal/events"
 )
 
+// minViewportRows y minViewportCols son los pisos para considerar la
+// terminal "usable". Por debajo, mostramos un mensaje de "muy chica".
+const (
+	minTermRows = 8
+	minTermCols = 20
+)
+
 func (m model) View() string {
 	if m.width == 0 {
 		return "" // todavía no recibimos WindowSizeMsg
 	}
+	if m.height < minTermRows || m.width < minTermCols {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			mutedStyle.Render("terminal muy chica · agrandá la ventana"))
+	}
 	header := m.renderHeader()
 	footer := m.renderFooter()
-	body := m.viewport.View()
 	input := inputStyle.Render(m.input.View())
-	base := lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
+
+	// El popup de completion va arriba del input. Recortamos el viewport
+	// para hacerle lugar (sino se solaparían en la última línea visible).
+	var bodyParts []string
+	bodyParts = append(bodyParts, header)
+	if m.completion.visible {
+		popup := m.completion.view(m.width, m.height)
+		popupHeight := lipgloss.Height(popup)
+		vpView := m.viewportTrimmed(popupHeight)
+		bodyParts = append(bodyParts, vpView, popup)
+	} else {
+		bodyParts = append(bodyParts, m.viewport.View())
+	}
+	bodyParts = append(bodyParts, input, footer)
+	base := lipgloss.JoinVertical(lipgloss.Left, bodyParts...)
 
 	if m.state == stateSessionsModal {
 		// Overlay del modal centrado sobre el chat. lipgloss.Place compone
@@ -26,19 +51,46 @@ func (m model) View() string {
 		// detrás (efecto "tomar foco").
 		return lipgloss.Place(m.width, m.height,
 			lipgloss.Center, lipgloss.Center,
-			m.sessionsModal.view(m.width))
+			m.sessionsModal.view(m.width, m.height))
 	}
 
 	return base
 }
 
+// viewportTrimmed renderiza el viewport pero recortando las últimas N filas
+// para hacerle lugar al popup. No modifica el viewport real — solo trunca
+// el string de salida.
+func (m model) viewportTrimmed(rows int) string {
+	full := m.viewport.View()
+	lines := strings.Split(full, "\n")
+	keep := len(lines) - rows
+	if keep < 1 {
+		keep = 1
+	}
+	return strings.Join(lines[:keep], "\n")
+}
+
 func (m model) renderHeader() string {
-	title := fmt.Sprintf("aqua · %s · %d msgs · %d tools · %d skills",
+	// Versión completa para pantallas anchas, compacta para angostas.
+	// El padding de headerStyle (0,1) suma 2 chars de cada lado: descontamos.
+	avail := m.width - 4
+	full := fmt.Sprintf("aqua · %s · %d msgs · %d tools · %d skills",
 		m.agent.Sessions().Current(),
 		m.agent.HistoryLen(),
 		len(m.agent.MCP().Tools()),
 		len(m.agent.Skills().List()),
 	)
+	short := fmt.Sprintf("aqua · %s · %d msgs",
+		m.agent.Sessions().Current(),
+		m.agent.HistoryLen(),
+	)
+	title := full
+	if lipgloss.Width(full) > avail {
+		title = short
+	}
+	if lipgloss.Width(title) > avail {
+		title = truncateANSI(title, avail)
+	}
 	return headerStyle.Width(m.width).Render(title)
 }
 
@@ -46,10 +98,35 @@ func (m model) renderFooter() string {
 	var hint string
 	if m.state == stateSending {
 		hint = m.spinner.View() + " enviando…"
+	} else if m.completion.visible {
+		hint = "↑↓ navegar · tab/enter completar · esc cerrar"
+	} else if m.width < 60 {
+		hint = "ctrl+c salir · ctrl+s sesiones"
 	} else {
-		hint = "ctrl+c salir · enter enviar · ctrl+j línea nueva"
+		hint = "ctrl+c salir · enter enviar · ctrl+j línea nueva · ctrl+s sesiones"
+	}
+	avail := m.width - 4
+	if lipgloss.Width(hint) > avail {
+		hint = truncateANSI(hint, avail)
 	}
 	return footerStyle.Width(m.width).Render(hint)
+}
+
+// truncateANSI corta un string visible a max columnas. Usa rune-count que es
+// suficiente para nuestros casos (no tenemos ANSI codes dentro del texto, los
+// estilos los agrega lipgloss después).
+func truncateANSI(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 1 {
+		return "…"
+	}
+	return string(r[:max-1]) + "…"
 }
 
 // renderChat compila las chatLines en un solo string ya estilizado, listo
