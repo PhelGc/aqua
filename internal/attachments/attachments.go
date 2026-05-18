@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
@@ -139,10 +140,17 @@ func (s *Store) Extract(id string) (string, error) {
 	case "image":
 		return fmt.Sprintf("[⚠ imagen %q (%d bytes) — el modelo actual no acepta imágenes, no la voy a poder analizar]",
 			meta.Name, meta.Size), nil
+	case "xls":
+		// Excel binario viejo (pre-2007). excelize no lo soporta y volcar
+		// los bytes como texto resulta en basura. El usuario debe convertir
+		// a .xlsx desde Excel/LibreOffice.
+		return fmt.Sprintf("[⚠ archivo %q (.xls, %d bytes) — formato Excel viejo no soportado. Convertilo a .xlsx desde Excel/LibreOffice y subilo de nuevo]",
+			meta.Name, meta.Size), nil
 	default:
-		// Para extensiones desconocidas, intentamos leerla como texto.
-		// Si parece binaria (no UTF-8), devolvemos solo metadata.
-		return extractText(path, meta.Name)
+		// Para extensiones desconocidas, intentamos leerla como texto pero
+		// chequeamos primero que sea UTF-8 válido. Si no lo es, devolvemos
+		// solo metadata para evitar inyectar bytes binarios al prompt.
+		return extractTextSafe(path, meta.Name, meta.Size)
 	}
 }
 
@@ -153,6 +161,8 @@ func detectKind(name string) string {
 	switch ext {
 	case ".xlsx", ".xlsm":
 		return "xlsx"
+	case ".xls":
+		return "xls"
 	case ".csv":
 		return "csv"
 	case ".tsv":
@@ -180,6 +190,25 @@ func extractText(path, name string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Archivo adjunto: %s\n\n```\n", name)
+	b.Write(data)
+	b.WriteString("\n```\n")
+	return b.String(), nil
+}
+
+// extractTextSafe valida que el archivo sea UTF-8 antes de leerlo como texto.
+// Si no lo es, devuelve solo un placeholder con metadata, evitando vomitar
+// bytes binarios al prompt. Usado para extensiones desconocidas.
+func extractTextSafe(path, name string, size int64) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(data) {
+		return fmt.Sprintf("[⚠ archivo %q (%d bytes, extensión no reconocida) — parece binario, no se puede leer como texto]",
+			name, size), nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "### Archivo adjunto: %s\n\n```\n", name)
