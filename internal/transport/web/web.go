@@ -232,18 +232,52 @@ func (s *webServer) handleReport(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	cleaned := filepath.Clean(rel)
-	if strings.Contains(cleaned, "..") || strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) {
-		http.Error(w, "ruta inválida", http.StatusBadRequest)
-		return
-	}
 	dir := os.Getenv("REPORT_OUTPUT_DIR")
 	if dir == "" {
 		dir = "reports"
 	}
-	path := filepath.Join(dir, cleaned)
+	path, ok := safeReportPath(dir, rel)
+	if !ok {
+		http.Error(w, "ruta inválida", http.StatusBadRequest)
+		return
+	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	http.ServeFile(w, r, path)
+}
+
+// safeReportPath valida que rel apunte a un archivo .md dentro de baseDir.
+// Devuelve el path absoluto resuelto cuando es seguro, ("", false) si:
+//   - rel es absoluto (en Unix o Windows)
+//   - rel contiene segmentos que escapan baseDir (..)
+//   - rel no termina en .md
+//
+// Verificamos con filepath.Rel sobre los Abs en vez de buscar ".." en el string,
+// porque "foo..bar.md" es legítimo y los chequeos por substring lo rechazan.
+func safeReportPath(baseDir, rel string) (string, bool) {
+	if rel == "" {
+		return "", false
+	}
+	// Rechazar paths absolutos (incluye unidades Windows como C:\foo).
+	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.ToLower(rel), ".md") {
+		return "", false
+	}
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", false
+	}
+	candidate := filepath.Join(absBase, filepath.FromSlash(rel))
+	rel2, err := filepath.Rel(absBase, candidate)
+	if err != nil {
+		return "", false
+	}
+	// Si Rel devuelve algo que empieza con ".." el candidate está fuera del base.
+	if rel2 == ".." || strings.HasPrefix(rel2, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return candidate, true
 }
 
 // handleState devuelve estado actual (rest informativo). No usado por la UI
