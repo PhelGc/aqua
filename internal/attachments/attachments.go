@@ -358,13 +358,9 @@ func writeMarkdownTable(b *strings.Builder, rows [][]string) {
 	if maxCols == 0 {
 		return
 	}
-	// Tope para no escupir tablas gigantes al LLM: 100 filas + header.
-	const maxRows = 101
-	truncated := false
-	if len(rows) > maxRows {
-		rows = rows[:maxRows]
-		truncated = true
-	}
+	// Sin tope de filas: mandamos la tabla entera al LLM. Mantenemos el
+	// truncado de celdas (200 chars) en writeRow para evitar que una sola
+	// celda con texto enorme sature el prompt.
 	writeRow(b, rows[0], maxCols)
 	// separador
 	b.WriteString("|")
@@ -374,9 +370,6 @@ func writeMarkdownTable(b *strings.Builder, rows [][]string) {
 	b.WriteString("\n")
 	for _, r := range rows[1:] {
 		writeRow(b, r, maxCols)
-	}
-	if truncated {
-		fmt.Fprintf(b, "_(tabla truncada a %d filas)_\n", maxRows-1)
 	}
 }
 
