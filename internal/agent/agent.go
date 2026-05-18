@@ -181,6 +181,7 @@ func (a *Agent) Skills() *skills.Registry    { return a.skills }
 func (a *Agent) SetSkills(r *skills.Registry) {
 	a.skills = r
 }
-func (a *Agent) MCP() *mcp.Manager       { return a.mcp }
-func (a *Agent) Personality() string     { return a.personality }
-func (a *Agent) Model() string           { return a.model }
+func (a *Agent) MCP() *mcp.Manager                { return a.mcp }
+func (a *Agent) Scheduler() *scheduler.Scheduler  { return a.scheduler }
+func (a *Agent) Personality() string              { return a.personality }
+func (a *Agent) Model() string                    { return a.model }

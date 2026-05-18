@@ -25,7 +25,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	// Orden importa: schedulers en vuelo pueden estar usando MCP, así que
+	// esperamos al scheduler antes de cerrar las sesiones MCP.
 	defer a.MCP().Close()
+	defer a.Scheduler().Shutdown()
 
 	switch *mode {
 	case "terminal", "console":

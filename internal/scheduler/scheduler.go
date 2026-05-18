@@ -53,6 +53,12 @@ type Scheduler struct {
 	// Runner se invoca cuando una tarea vence. El caller lo asigna después
 	// de construir el Scheduler (típicamente apuntando al método del agente).
 	Runner func(ctx context.Context, sched *Schedule)
+	// runnersWG cuenta runners en vuelo para que Shutdown pueda esperarlos
+	// antes de que el caller cierre recursos compartidos (MCP, etc.).
+	runnersWG sync.WaitGroup
+	// done se cierra cuando Start retorna, así Shutdown puede esperar al loop
+	// además de los runners en vuelo.
+	done chan struct{}
 }
 
 func New(dir string) (*Scheduler, error) {
@@ -62,6 +68,7 @@ func New(dir string) (*Scheduler, error) {
 	s := &Scheduler{
 		dir:   dir,
 		items: make(map[string]*Schedule),
+		done:  make(chan struct{}),
 	}
 	if err := s.loadAll(); err != nil {
 		return nil, fmt.Errorf("cargando schedules: %w", err)
@@ -102,12 +109,28 @@ func (s *Scheduler) loadAll() error {
 				sched.Enabled = false
 			}
 		}
+		// One-shot vencido durante un downtime: lo deshabilitamos en vez de
+		// dispararlo apenas arranque el tick (sería un "alud" de tareas vencidas
+		// confuso para el usuario). Queda persistido como deshabilitado para
+		// que pueda decidir si lo reactiva o lo borra.
+		if sched.Cron == "" && sched.Enabled && time.Now().After(sched.NextRun) {
+			fmt.Fprintf(os.Stderr, "sched: warning %s (one-shot) venció a las %s mientras estaba apagado; queda deshabilitado\n",
+				sched.ID, sched.NextRun.Format(time.RFC3339))
+			sched.Enabled = false
+			if err := persistTo(s.dir, &sched); err != nil {
+				fmt.Fprintf(os.Stderr, "sched: warning persistiendo deshabilitación de %s: %v\n", sched.ID, err)
+			}
+		}
 		s.items[sched.ID] = &sched
 	}
 	return nil
 }
 
+// Start corre el loop de tick hasta que ctx se cancela. Pensado para correrse
+// en una goroutine. Cuando retorna, los runners disparados durante la corrida
+// pueden seguir vivos: usá Shutdown para esperarlos.
 func (s *Scheduler) Start(ctx context.Context) {
+	defer close(s.done)
 	if s.Runner == nil {
 		fmt.Fprintln(os.Stderr, "sched: runner no inyectado, scheduler no arranca")
 		return
@@ -122,6 +145,14 @@ func (s *Scheduler) Start(ctx context.Context) {
 			s.fireDue(ctx, now)
 		}
 	}
+}
+
+// Shutdown espera a que Start retorne y a que los runners en vuelo terminen.
+// El caller la invoca antes de cerrar recursos compartidos (MCP, sesiones)
+// para evitar que los runners los usen después del cierre.
+func (s *Scheduler) Shutdown() {
+	<-s.done
+	s.runnersWG.Wait()
 }
 
 // fireDue identifica schedules vencidas, actualiza su NextRun/Enabled atómicamente
@@ -142,13 +173,19 @@ func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
 		} else {
 			sched.Enabled = false
 		}
-		s.persistLocked(sched)
+		if err := s.persistLocked(sched); err != nil {
+			fmt.Fprintf(os.Stderr, "sched: warning persistiendo %s tras disparar: %v\n", sched.ID, err)
+		}
 		due = append(due, sched)
 	}
 	s.mu.Unlock()
 
 	for _, sched := range due {
-		go s.Runner(ctx, sched)
+		s.runnersWG.Add(1)
+		go func(sc *Schedule) {
+			defer s.runnersWG.Done()
+			s.Runner(ctx, sc)
+		}(sched)
 	}
 }
 
@@ -200,8 +237,8 @@ func (s *Scheduler) List() []*Schedule {
 	defer s.mu.Unlock()
 	out := make([]*Schedule, 0, len(s.items))
 	for _, sc := range s.items {
-		copy := *sc
-		out = append(out, &copy)
+		cp := *sc
+		out = append(out, &cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NextRun.Before(out[j].NextRun) })
 	return out
@@ -219,11 +256,19 @@ func (s *Scheduler) MarkRun(id string, when time.Time) {
 	t := when
 	sched.LastRun = &t
 	sched.RunCount++
-	_ = s.persistLocked(sched)
+	if err := s.persistLocked(sched); err != nil {
+		fmt.Fprintf(os.Stderr, "sched: warning persistiendo MarkRun de %s: %v\n", id, err)
+	}
 }
 
 func (s *Scheduler) persistLocked(sched *Schedule) error {
-	path := filepath.Join(s.dir, sched.ID+".json")
+	return persistTo(s.dir, sched)
+}
+
+// persistTo escribe un schedule al disco. Variante sin lock para usar desde
+// loadAll (que corre antes de que nadie pueda concurrir con él).
+func persistTo(dir string, sched *Schedule) error {
+	path := filepath.Join(dir, sched.ID+".json")
 	data, err := json.MarshalIndent(sched, "", "  ")
 	if err != nil {
 		return err
