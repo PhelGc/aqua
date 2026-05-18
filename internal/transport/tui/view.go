@@ -252,10 +252,16 @@ func renderLine(l chatLine, width int) string {
 	case lineSystem:
 		return mutedStyle.Render("· " + l.text)
 	case lineThinkingInProgress:
-		return thinkingStyle.Render("· pensando…")
+		// Reasoning visible en gris cursiva mientras llega. Si la línea
+		// está vacía (recién creada antes del primer chunk), mostramos
+		// solo el header.
+		header := "· pensando"
+		if l.text != "" {
+			return thinkingStyle.Render(header + "\n" + wrap.Render(l.text))
+		}
+		return thinkingStyle.Render(header + "…")
 	case lineThinkingClosed:
-		// Wrap respetando el ancho del viewport; el prefix "» thinking: "
-		// queda en la primera línea, continuaciones sin prefix.
+		// Wrap respetando el ancho del viewport.
 		return mutedStyle.Render(wrap.Render("» thinking: " + l.text))
 	}
 	return l.text

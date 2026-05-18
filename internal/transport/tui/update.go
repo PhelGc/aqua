@@ -131,13 +131,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, next
 
 	case streamDeltaMsg:
-		// reasoning_content se acumula silenciosamente (solo se muestra el
-		// indicador "· pensando"). content se va concatenando a la línea
-		// assistant del turn actual.
+		// reasoning_content se muestra en vivo en una línea lineThinkingInProgress.
+		// content va a la línea assistant. Antes del primer content del turn,
+		// colapsamos el thinking si existía (switch visual "pensando" → "respondiendo").
 		if msg.ReasoningContent != "" {
 			m.addThinkingChunk(msg.ReasoningContent)
 		}
 		if msg.Content != "" {
+			if !hasAssistantLine(m.chatView) {
+				m.thinkingTransition()
+			}
 			m.appendOrExtend(lineAssistant, msg.Content)
 		}
 		return m, waitForDelta(m.deltaCh)

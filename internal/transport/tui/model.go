@@ -136,31 +136,64 @@ func (m *model) appendOrExtend(kind lineKind, text string) {
 	m.refreshViewport()
 }
 
-// addThinkingChunk acumula reasoning_content del turno actual y, si todavía
-// no insertamos el indicador "· pensando" en chatView, lo agregamos ahora.
-// El contenido del thinking nunca se muestra en vivo; solo cuando cierra el
-// turno aparece colapsado.
+// addThinkingChunk acumula reasoning_content del turno actual, escribiéndolo
+// en vivo en una línea lineThinkingInProgress del chatView. Cuando termina
+// el thinking (primer content del assistant o fin del stream), la línea se
+// colapsa a lineThinkingClosed.
 func (m *model) addThinkingChunk(chunk string) {
 	if chunk == "" {
 		return
 	}
 	m.thinkingBuf.WriteString(chunk)
-	// Si la última línea no es ya el indicador, lo agregamos. Buscamos hacia
-	// atrás respetando el último user para no confundir turns.
-	hasIndicator := false
+	// Buscamos la línea in-progress del turn actual; si no existe, la creamos.
+	idx := -1
 	for i := len(m.chatView) - 1; i >= 0; i-- {
 		if m.chatView[i].kind == lineThinkingInProgress {
-			hasIndicator = true
+			idx = i
 			break
 		}
 		if m.chatView[i].kind == lineUser {
 			break
 		}
 	}
-	if !hasIndicator {
-		m.chatView = append(m.chatView, chatLine{kind: lineThinkingInProgress, time: time.Now()})
-		m.refreshViewport()
+	if idx == -1 {
+		m.chatView = append(m.chatView, chatLine{
+			kind: lineThinkingInProgress,
+			text: m.thinkingBuf.String(),
+			time: time.Now(),
+		})
+	} else {
+		m.chatView[idx].text = m.thinkingBuf.String()
 	}
+	m.refreshViewport()
+}
+
+// thinkingTransition se llama cuando llega el primer Content del assistant:
+// si hay un thinking en vivo, lo colapsa a la versión closed. Esto es el
+// switch visual de "pensando" a "respondiendo".
+func (m *model) thinkingTransition() {
+	idx := -1
+	for i := len(m.chatView) - 1; i >= 0; i-- {
+		if m.chatView[i].kind == lineThinkingInProgress {
+			idx = i
+			break
+		}
+		if m.chatView[i].kind == lineUser {
+			break
+		}
+	}
+	if idx == -1 {
+		return
+	}
+	snippet := strings.TrimSpace(m.thinkingBuf.String())
+	if snippet == "" {
+		m.chatView = append(m.chatView[:idx], m.chatView[idx+1:]...)
+	} else {
+		m.chatView[idx].kind = lineThinkingClosed
+		m.chatView[idx].text = snippet
+	}
+	m.thinkingBuf.Reset()
+	m.refreshViewport()
 }
 
 // closeThinking corre al final del turn: si hay reasoning acumulado, sustituye

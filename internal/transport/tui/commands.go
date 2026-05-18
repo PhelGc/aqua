@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -71,64 +70,96 @@ func startSend(ctx context.Context, m model, input string) (deltaCh chan llm.Str
 		replyCh <- chatReplyMsg{text: text, artifact: artifact, err: err}
 	}()
 
-	// Goroutine smoother: drena rawCh y re-emite a deltaCh char por char.
+	// Goroutine smoother: arquitectura productor/consumidor interno.
+	//
+	// Mantiene DOS buffers (reasoning y content) y un ticker que cada
+	// smoothingDelay saca el siguiente rune del buffer apropiado y lo manda
+	// a deltaCh. Esto evita el bug de bloquear el drain de rawCh mientras
+	// se hace el sleep entre runes.
+	//
+	// Orden de emisión:
+	//   1. Mientras haya runes pendientes en reasoningBuf, emitir esos.
+	//   2. Solo cuando reasoningBuf está vacío Y pasaron reasoningSettleTime
+	//      sin recibir más reasoning, empezar a emitir contentBuf.
+	//   3. Tool-calls y role: pass-through inmediato.
+	//
+	// Termina cuando rawCh está cerrado y ambos buffers vacíos.
 	go func() {
 		defer close(deltaCh)
-		for raw := range rawCh {
-			emitSmoothed(ctx, raw, deltaCh)
+
+		var reasoningBuf, contentBuf []rune
+		var lastReasoningAt time.Time
+		const reasoningSettleTime = 200 * time.Millisecond
+		rawDone := false
+
+		tick := time.NewTicker(smoothingDelay)
+		defer tick.Stop()
+
+		send := func(d llm.StreamDelta) bool {
+			select {
+			case deltaCh <- d:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
+		for {
+			// Si todo terminó y no queda nada que emitir, salimos.
+			if rawDone && len(reasoningBuf) == 0 && len(contentBuf) == 0 {
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+
+			case raw, ok := <-rawCh:
+				if !ok {
+					rawDone = true
+					rawCh = nil // evita re-seleccionar el case cerrado
+					continue
+				}
+				if len(raw.ToolCalls) > 0 || raw.Role != "" {
+					if !send(raw) {
+						return
+					}
+				}
+				if raw.ReasoningContent != "" {
+					lastReasoningAt = time.Now()
+					reasoningBuf = append(reasoningBuf, []rune(raw.ReasoningContent)...)
+				}
+				if raw.Content != "" {
+					contentBuf = append(contentBuf, []rune(raw.Content)...)
+				}
+
+			case <-tick.C:
+				// Prioridad 1: si hay reasoning pendiente, emitir un rune.
+				if len(reasoningBuf) > 0 {
+					r := reasoningBuf[0]
+					reasoningBuf = reasoningBuf[1:]
+					if !send(llm.StreamDelta{ReasoningContent: string(r)}) {
+						return
+					}
+					continue
+				}
+				// Prioridad 2: emitir content solo si pasó settleTime sin
+				// nuevo reasoning (o el rawCh ya cerró).
+				canEmitContent := rawDone ||
+					lastReasoningAt.IsZero() ||
+					time.Since(lastReasoningAt) >= reasoningSettleTime
+				if len(contentBuf) > 0 && canEmitContent {
+					r := contentBuf[0]
+					contentBuf = contentBuf[1:]
+					if !send(llm.StreamDelta{Content: string(r)}) {
+						return
+					}
+				}
+			}
 		}
 	}()
 
 	return deltaCh, replyCh
-}
-
-// emitSmoothed descompone un delta crudo en deltas por rune individual y los
-// envía a out con un sleep entre cada uno. Maneja content y reasoning_content
-// por separado (un delta puede tener ambos). Si ctx se cancela, corta.
-func emitSmoothed(ctx context.Context, raw llm.StreamDelta, out chan<- llm.StreamDelta) {
-	// Tool-calls y role se mandan tal cual (no son texto streameable).
-	if len(raw.ToolCalls) > 0 || raw.Role != "" {
-		select {
-		case out <- raw:
-		case <-ctx.Done():
-			return
-		}
-	}
-	streamRunes(ctx, raw.Content, false, out)
-	streamRunes(ctx, raw.ReasoningContent, true, out)
-}
-
-// streamRunes envía cada rune de s como un delta por separado, durmiendo
-// smoothingDelay entre cada uno. reasoning=true los manda como ReasoningContent
-// en vez de Content.
-func streamRunes(ctx context.Context, s string, reasoning bool, out chan<- llm.StreamDelta) {
-	if s == "" {
-		return
-	}
-	for len(s) > 0 {
-		r, size := utf8.DecodeRuneInString(s)
-		s = s[size:]
-		piece := string(r)
-		var d llm.StreamDelta
-		if reasoning {
-			d.ReasoningContent = piece
-		} else {
-			d.Content = piece
-		}
-		select {
-		case out <- d:
-		case <-ctx.Done():
-			return
-		}
-		// Sleep solo entre runes para no congelar el final del stream.
-		if len(s) > 0 {
-			select {
-			case <-time.After(smoothingDelay):
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
 }
 
 // waitForDelta toma el próximo delta del canal y lo entrega como tea.Msg.
