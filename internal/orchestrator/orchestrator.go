@@ -1,16 +1,20 @@
-package main
+// Package orchestrator ejecuta jobs en paralelo con un pool de tamaño fijo,
+// reintentos con backoff y emisión opcional de eventos.
+package orchestrator
 
 import (
 	"context"
 	"sync"
 	"time"
+
+	"aqua/internal/events"
 )
 
 // Job es una tarea procesable por un worker aislado.
 type Job interface {
-	ID() string         // identificador único para logs y resultados
-	Prompt() string     // mensaje del usuario al worker
-	System() []string   // mensajes system adicionales (además de la personalidad)
+	ID() string       // identificador único para logs y resultados
+	Prompt() string   // mensaje del usuario al worker
+	System() []string // mensajes system adicionales (además de la personalidad)
 }
 
 // Result es el output de procesar un Job.
@@ -23,7 +27,7 @@ type Result struct {
 }
 
 // ExecuteFunc procesa un Job y devuelve la respuesta cruda del worker.
-// Default: agent.runIsolated. Tests inyectan un stub.
+// Default: agent.RunIsolated. Tests inyectan un stub.
 type ExecuteFunc func(ctx context.Context, job Job) (string, error)
 
 // PoolOptions configura una corrida del orquestador.
@@ -36,6 +40,8 @@ type PoolOptions struct {
 	// Recibe el contador, el total, y el Result del job recién completado.
 	OnProgress func(done, total int, r Result)
 	Execute    ExecuteFunc
+	// Sink recibe eventos job_start/job_done. nil = sin emisión.
+	Sink events.Sink
 }
 
 func (o *PoolOptions) applyDefaults() {
@@ -53,10 +59,22 @@ func (o *PoolOptions) applyDefaults() {
 	}
 }
 
-// runPool ejecuta los jobs en paralelo respetando opts.Size. Devuelve los
+func emit(sink events.Sink, typ, jobID string, payload map[string]any) {
+	if sink == nil {
+		return
+	}
+	sink.Publish(events.Event{
+		Type:    typ,
+		Time:    time.Now(),
+		JobID:   jobID,
+		Payload: payload,
+	})
+}
+
+// Run ejecuta los jobs en paralelo respetando opts.Size. Devuelve los
 // resultados en el mismo orden que los jobs recibidos. No aborta el batch si
 // uno falla: el Result correspondiente lleva el error.
-func (a *agent) runPool(ctx context.Context, jobs []Job, opts PoolOptions) []Result {
+func Run(ctx context.Context, jobs []Job, opts PoolOptions) []Result {
 	opts.applyDefaults()
 	if len(jobs) == 0 {
 		return nil
@@ -66,7 +84,7 @@ func (a *agent) runPool(ctx context.Context, jobs []Job, opts PoolOptions) []Res
 	}
 	exec := opts.Execute
 	if exec == nil {
-		exec = a.runIsolated
+		return nil
 	}
 
 	results := make([]Result, len(jobs))
@@ -86,7 +104,7 @@ func (a *agent) runPool(ctx context.Context, jobs []Job, opts PoolOptions) []Res
 		go func() {
 			defer wg.Done()
 			for ij := range jobCh {
-				a.emit("job_start", ij.job.ID(), nil)
+				emit(opts.Sink, "job_start", ij.job.ID(), nil)
 				results[ij.idx] = runJob(ctx, ij.job, opts, exec)
 				r := results[ij.idx]
 				donePayload := map[string]any{
@@ -98,7 +116,7 @@ func (a *agent) runPool(ctx context.Context, jobs []Job, opts PoolOptions) []Res
 				if r.Err != nil {
 					donePayload["error"] = r.Err.Error()
 				}
-				a.emit("job_done", r.JobID, donePayload)
+				emit(opts.Sink, "job_done", r.JobID, donePayload)
 				if opts.OnProgress != nil {
 					doneMu.Lock()
 					done++
@@ -160,26 +178,4 @@ func runJob(ctx context.Context, j Job, opts PoolOptions, exec ExecuteFunc) Resu
 	}
 	r.Elapsed = time.Since(start)
 	return r
-}
-
-// runIsolated procesa un Job en un worker: agente con history limpia que reusa
-// http y mcp del agente principal. No tiene skills ni sessions. El label del
-// worker es el JobID para que los tool-calls en los logs se identifiquen.
-// El sink de eventos se hereda para que los eventos del worker fluyan al UI.
-func (a *agent) runIsolated(ctx context.Context, j Job) (string, error) {
-	worker := &agent{
-		endpoint:    a.endpoint,
-		model:       a.model,
-		apiKey:      a.apiKey,
-		personality: a.personality,
-		http:        a.http,
-		mcp:         a.mcp,
-		label:       j.ID(),
-		events:      a.events,
-	}
-	for _, sys := range j.System() {
-		worker.history = append(worker.history, message{Role: "system", Content: sys})
-	}
-	worker.history = append(worker.history, message{Role: "user", Content: j.Prompt()})
-	return worker.runConversation(ctx, &worker.history)
 }

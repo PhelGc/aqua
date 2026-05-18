@@ -1,4 +1,6 @@
-package main
+// Package mcp gestiona la conexión a uno o más servidores MCP y expone las
+// tools resultantes en el formato esperado por el endpoint OpenAI.
+package mcp
 
 import (
 	"context"
@@ -9,50 +11,52 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"aqua/internal/llm"
 )
 
 const (
-	defaultMCPConfigPath = "mcp.json"
-	toolNameSep          = "__"
+	defaultConfigPath = "mcp.json"
+	toolNameSep       = "__"
 )
 
-type mcpServerSpec struct {
+type ServerSpec struct {
 	Command string            `json:"command"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 }
 
-type mcpConfig struct {
-	Servers map[string]mcpServerSpec `json:"mcpServers"`
+type Config struct {
+	Servers map[string]ServerSpec `json:"mcpServers"`
 }
 
-type mcpManager struct {
+type Manager struct {
 	sessions   map[string]*mcp.ClientSession
 	toolServer map[string]string
-	toolDefs   []openaiTool
+	toolDefs   []llm.Tool
 }
 
-func loadMCPConfig() (*mcpConfig, error) {
+func LoadConfig() (*Config, error) {
 	path := os.Getenv("OPENCODE_MCP_CONFIG")
 	if path == "" {
-		path = defaultMCPConfigPath
+		path = defaultConfigPath
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &mcpConfig{}, nil
+			return &Config{}, nil
 		}
 		return nil, err
 	}
-	var cfg mcpConfig
+	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parseando %s: %w", path, err)
 	}
 	return &cfg, nil
 }
 
-func newMCPManager(ctx context.Context, cfg *mcpConfig) (*mcpManager, error) {
-	m := &mcpManager{
+func New(ctx context.Context, cfg *Config) (*Manager, error) {
+	m := &Manager{
 		sessions:   make(map[string]*mcp.ClientSession),
 		toolServer: make(map[string]string),
 	}
@@ -95,9 +99,9 @@ func newMCPManager(ctx context.Context, cfg *mcpConfig) (*mcpManager, error) {
 			if params == nil {
 				params = map[string]any{"type": "object", "properties": map[string]any{}}
 			}
-			m.toolDefs = append(m.toolDefs, openaiTool{
+			m.toolDefs = append(m.toolDefs, llm.Tool{
 				Type: "function",
-				Function: openaiToolFunc{
+				Function: llm.ToolFunc{
 					Name:        full,
 					Description: t.Description,
 					Parameters:  params,
@@ -108,11 +112,17 @@ func newMCPManager(ctx context.Context, cfg *mcpConfig) (*mcpManager, error) {
 	return m, nil
 }
 
-func (m *mcpManager) tools() []openaiTool {
+func (m *Manager) Tools() []llm.Tool {
 	return m.toolDefs
 }
 
-func (m *mcpManager) callTool(ctx context.Context, fullName, argsJSON string) (string, error) {
+// Sessions devuelve la cantidad de servidores MCP conectados.
+// Útil para logs informativos en los transports.
+func (m *Manager) Sessions() int {
+	return len(m.sessions)
+}
+
+func (m *Manager) CallTool(ctx context.Context, fullName, argsJSON string) (string, error) {
 	server, ok := m.toolServer[fullName]
 	if !ok {
 		return "", fmt.Errorf("tool desconocida: %s", fullName)
@@ -151,7 +161,7 @@ func (m *mcpManager) callTool(ctx context.Context, fullName, argsJSON string) (s
 	return sb.String(), nil
 }
 
-func (m *mcpManager) Close() {
+func (m *Manager) Close() {
 	for _, s := range m.sessions {
 		_ = s.Close()
 	}

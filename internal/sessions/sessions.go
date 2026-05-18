@@ -1,4 +1,5 @@
-package main
+// Package sessions persiste y gestiona las conversaciones del agente.
+package sessions
 
 import (
 	"encoding/json"
@@ -9,30 +10,32 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"aqua/internal/llm"
 )
 
 const (
-	defaultSessionsDir  = "sessions"
-	defaultSessionName  = "default"
-	currentSessionFile  = ".current"
-	sessionFileExt      = ".json"
+	defaultSessionsDir = "sessions"
+	defaultSessionName = "default"
+	currentSessionFile = ".current"
+	sessionFileExt     = ".json"
 )
 
 var validSessionName = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 type sessionFile struct {
-	Name    string    `json:"name"`
-	Created time.Time `json:"created"`
-	Updated time.Time `json:"updated"`
-	History []message `json:"history"`
+	Name    string        `json:"name"`
+	Created time.Time     `json:"created"`
+	Updated time.Time     `json:"updated"`
+	History []llm.Message `json:"history"`
 }
 
-type sessionManager struct {
+type Manager struct {
 	dir         string
 	currentName string
 }
 
-func newSessionManager() (*sessionManager, error) {
+func New() (*Manager, error) {
 	dir := os.Getenv("OPENCODE_SESSIONS_DIR")
 	if dir == "" {
 		dir = defaultSessionsDir
@@ -40,7 +43,7 @@ func newSessionManager() (*sessionManager, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creando %s: %w", dir, err)
 	}
-	s := &sessionManager{dir: dir}
+	s := &Manager{dir: dir}
 	if name, err := s.readCurrent(); err == nil && name != "" {
 		s.currentName = name
 	} else {
@@ -49,11 +52,11 @@ func newSessionManager() (*sessionManager, error) {
 	return s, nil
 }
 
-func (s *sessionManager) path(name string) string {
+func (s *Manager) path(name string) string {
 	return filepath.Join(s.dir, name+sessionFileExt)
 }
 
-func (s *sessionManager) readCurrent() (string, error) {
+func (s *Manager) readCurrent() (string, error) {
 	data, err := os.ReadFile(filepath.Join(s.dir, currentSessionFile))
 	if err != nil {
 		return "", err
@@ -61,15 +64,15 @@ func (s *sessionManager) readCurrent() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-func (s *sessionManager) writeCurrent() error {
+func (s *Manager) writeCurrent() error {
 	return os.WriteFile(filepath.Join(s.dir, currentSessionFile), []byte(s.currentName), 0o644)
 }
 
-func (s *sessionManager) current() string {
+func (s *Manager) Current() string {
 	return s.currentName
 }
 
-func (s *sessionManager) load(name string) ([]message, error) {
+func (s *Manager) Load(name string) ([]llm.Message, error) {
 	if !validSessionName.MatchString(name) {
 		return nil, fmt.Errorf("nombre inválido %q (solo letras, números, . _ -)", name)
 	}
@@ -87,7 +90,7 @@ func (s *sessionManager) load(name string) ([]message, error) {
 	return f.History, nil
 }
 
-func (s *sessionManager) save(name string, history []message) error {
+func (s *Manager) Save(name string, history []llm.Message) error {
 	if !validSessionName.MatchString(name) {
 		return fmt.Errorf("nombre inválido %q", name)
 	}
@@ -114,7 +117,7 @@ func (s *sessionManager) save(name string, history []message) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-func (s *sessionManager) switchTo(name string) error {
+func (s *Manager) SwitchTo(name string) error {
 	if !validSessionName.MatchString(name) {
 		return fmt.Errorf("nombre inválido %q (solo letras, números, . _ -)", name)
 	}
@@ -122,7 +125,7 @@ func (s *sessionManager) switchTo(name string) error {
 	return s.writeCurrent()
 }
 
-func (s *sessionManager) list() ([]string, error) {
+func (s *Manager) List() ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
@@ -142,7 +145,7 @@ func (s *sessionManager) list() ([]string, error) {
 	return names, nil
 }
 
-func (s *sessionManager) delete(name string) error {
+func (s *Manager) Delete(name string) error {
 	if name == s.currentName {
 		return fmt.Errorf("no se puede borrar la sesión actual (cambiá primero con /sessions load)")
 	}

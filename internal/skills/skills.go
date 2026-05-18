@@ -1,4 +1,6 @@
-package main
+// Package skills carga y renderiza las skills (templates .md) que el usuario
+// invoca con `/<nombre>`.
+package skills
 
 import (
 	"fmt"
@@ -16,35 +18,35 @@ const (
 
 var utf8BOM = string([]byte{0xEF, 0xBB, 0xBF})
 
-// skillNameNormalizer reemplaza acentos comunes y mapea a minúsculas para que
+// nameNormalizer reemplaza acentos comunes y mapea a minúsculas para que
 // /recordá y /recorda matcheen el mismo skill (no se complica la vida el usuario
 // tipeando acentos en una terminal).
-var skillNameNormalizer = strings.NewReplacer(
+var nameNormalizer = strings.NewReplacer(
 	"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u",
 	"Á", "a", "É", "e", "Í", "i", "Ó", "o", "Ú", "u",
 	"ñ", "n", "Ñ", "n", "ü", "u", "Ü", "u",
 )
 
-func normalizeSkillName(s string) string {
-	return strings.ToLower(skillNameNormalizer.Replace(s))
+func normalizeName(s string) string {
+	return strings.ToLower(nameNormalizer.Replace(s))
 }
 
-type skill struct {
-	name        string
-	description string
-	template    string
+type Skill struct {
+	Name        string
+	Description string
+	Template    string
 }
 
-type skillRegistry struct {
-	skills map[string]*skill
+type Registry struct {
+	skills map[string]*Skill
 }
 
-func loadSkills() (*skillRegistry, error) {
+func Load() (*Registry, error) {
 	dir := os.Getenv("OPENCODE_SKILLS_DIR")
 	if dir == "" {
 		dir = defaultSkillsDir
 	}
-	r := &skillRegistry{skills: make(map[string]*skill)}
+	r := &Registry{skills: make(map[string]*Skill)}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -62,10 +64,10 @@ func loadSkills() (*skillRegistry, error) {
 			return nil, fmt.Errorf("leyendo skill %q: %w", name, err)
 		}
 		desc, body := parseSkillFile(string(data))
-		r.skills[normalizeSkillName(name)] = &skill{
-			name:        name,
-			description: desc,
-			template:    body,
+		r.skills[normalizeName(name)] = &Skill{
+			Name:        name,
+			Description: desc,
+			Template:    body,
 		}
 	}
 	return r, nil
@@ -93,12 +95,12 @@ func parseSkillFile(content string) (description, body string) {
 	return description, body
 }
 
-func (r *skillRegistry) render(name, args string) (string, bool) {
-	s, ok := r.skills[normalizeSkillName(name)]
+func (r *Registry) Render(name, args string) (string, bool) {
+	s, ok := r.skills[normalizeName(name)]
 	if !ok {
 		return "", false
 	}
-	body := substituteTimeTokens(s.template)
+	body := substituteTimeTokens(s.Template)
 	body = r.substituteSkillsToken(body)
 	if strings.Contains(body, inputPlaceholder) {
 		return strings.ReplaceAll(body, inputPlaceholder, args), true
@@ -112,13 +114,13 @@ func (r *skillRegistry) render(name, args string) (string, bool) {
 // substituteSkillsToken reemplaza {{skills}} por la lista de skills cargadas.
 // Útil para skills meta como /schedule que necesitan saber qué comandos puede
 // programar.
-func (r *skillRegistry) substituteSkillsToken(template string) string {
+func (r *Registry) substituteSkillsToken(template string) string {
 	if !strings.Contains(template, "{{skills}}") {
 		return template
 	}
 	names := make([]string, 0, len(r.skills))
 	for _, s := range r.skills {
-		names = append(names, "/"+s.name)
+		names = append(names, "/"+s.Name)
 	}
 	sort.Strings(names)
 	return strings.ReplaceAll(template, "{{skills}}", strings.Join(names, ", "))
@@ -135,9 +137,11 @@ var weekdayEs = map[time.Weekday]string{
 }
 
 // substituteTimeTokens reemplaza placeholders temporales en el template del skill:
-//   {{now}}     → ISO8601 con offset local (ej. 2026-05-17T19:35:42-05:00)
-//   {{today}}   → fecha YYYY-MM-DD
-//   {{weekday}} → día de la semana en español
+//
+//	{{now}}     → ISO8601 con offset local (ej. 2026-05-17T19:35:42-05:00)
+//	{{today}}   → fecha YYYY-MM-DD
+//	{{weekday}} → día de la semana en español
+//
 // Se resuelven en cada render, así las skills siempre ven la hora actual.
 func substituteTimeTokens(template string) string {
 	now := time.Now()
@@ -147,11 +151,11 @@ func substituteTimeTokens(template string) string {
 	return template
 }
 
-func (r *skillRegistry) list() []*skill {
-	out := make([]*skill, 0, len(r.skills))
+func (r *Registry) List() []*Skill {
+	out := make([]*Skill, 0, len(r.skills))
 	for _, s := range r.skills {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }

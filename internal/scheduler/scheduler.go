@@ -1,4 +1,7 @@
-package main
+// Package scheduler implementa el motor cron + persistencia de tareas
+// programadas. La ejecución concreta de cada disparo se delega al Runner
+// inyectado por el caller.
+package scheduler
 
 import (
 	"context"
@@ -18,7 +21,7 @@ import (
 )
 
 const (
-	defaultSchedulesDir   = "schedules"
+	DefaultDir            = "schedules"
 	schedulerTickInterval = 15 * time.Second
 )
 
@@ -41,20 +44,22 @@ type Schedule struct {
 	Enabled  bool       `json:"enabled"`
 }
 
-// scheduler gestiona las tareas programadas: persistencia en disco, tick loop
-// que dispara las que están vencidas, y delega ejecución al runner inyectado.
-type scheduler struct {
-	dir    string
-	mu     sync.Mutex
-	items  map[string]*Schedule
-	runner func(ctx context.Context, sched *Schedule)
+// Scheduler gestiona las tareas programadas: persistencia en disco, tick loop
+// que dispara las que están vencidas, y delega ejecución al Runner inyectado.
+type Scheduler struct {
+	dir   string
+	mu    sync.Mutex
+	items map[string]*Schedule
+	// Runner se invoca cuando una tarea vence. El caller lo asigna después
+	// de construir el Scheduler (típicamente apuntando al método del agente).
+	Runner func(ctx context.Context, sched *Schedule)
 }
 
-func newScheduler(dir string) (*scheduler, error) {
+func New(dir string) (*Scheduler, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creando %s: %w", dir, err)
 	}
-	s := &scheduler{
+	s := &Scheduler{
 		dir:   dir,
 		items: make(map[string]*Schedule),
 	}
@@ -64,7 +69,7 @@ func newScheduler(dir string) (*scheduler, error) {
 	return s, nil
 }
 
-func (s *scheduler) loadAll() error {
+func (s *Scheduler) loadAll() error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return err
@@ -102,8 +107,8 @@ func (s *scheduler) loadAll() error {
 	return nil
 }
 
-func (s *scheduler) start(ctx context.Context) {
-	if s.runner == nil {
+func (s *Scheduler) Start(ctx context.Context) {
+	if s.Runner == nil {
 		fmt.Fprintln(os.Stderr, "sched: runner no inyectado, scheduler no arranca")
 		return
 	}
@@ -121,7 +126,7 @@ func (s *scheduler) start(ctx context.Context) {
 
 // fireDue identifica schedules vencidas, actualiza su NextRun/Enabled atómicamente
 // para evitar re-disparos, y delega cada ejecución a una goroutine.
-func (s *scheduler) fireDue(ctx context.Context, now time.Time) {
+func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
 	s.mu.Lock()
 	var due []*Schedule
 	for _, sched := range s.items {
@@ -143,11 +148,11 @@ func (s *scheduler) fireDue(ctx context.Context, now time.Time) {
 	s.mu.Unlock()
 
 	for _, sched := range due {
-		go s.runner(ctx, sched)
+		go s.Runner(ctx, sched)
 	}
 }
 
-func (s *scheduler) add(sched *Schedule) error {
+func (s *Scheduler) Add(sched *Schedule) error {
 	if sched.ID == "" {
 		sched.ID = newScheduleID()
 	}
@@ -174,7 +179,7 @@ func (s *scheduler) add(sched *Schedule) error {
 	return s.persistLocked(sched)
 }
 
-func (s *scheduler) cancel(id string) error {
+func (s *Scheduler) Cancel(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sched, ok := s.items[id]
@@ -190,7 +195,7 @@ func (s *scheduler) cancel(id string) error {
 	return nil
 }
 
-func (s *scheduler) list() []*Schedule {
+func (s *Scheduler) List() []*Schedule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]*Schedule, 0, len(s.items))
@@ -202,9 +207,9 @@ func (s *scheduler) list() []*Schedule {
 	return out
 }
 
-// markRun se llama desde el runner tras cada disparo exitoso para actualizar
+// MarkRun se llama desde el runner tras cada disparo exitoso para actualizar
 // LastRun y RunCount. NextRun ya se actualizó en fireDue.
-func (s *scheduler) markRun(id string, when time.Time) {
+func (s *Scheduler) MarkRun(id string, when time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sched, ok := s.items[id]
@@ -217,7 +222,7 @@ func (s *scheduler) markRun(id string, when time.Time) {
 	_ = s.persistLocked(sched)
 }
 
-func (s *scheduler) persistLocked(sched *Schedule) error {
+func (s *Scheduler) persistLocked(sched *Schedule) error {
 	path := filepath.Join(s.dir, sched.ID+".json")
 	data, err := json.MarshalIndent(sched, "", "  ")
 	if err != nil {

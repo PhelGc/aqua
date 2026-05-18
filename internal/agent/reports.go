@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aqua/internal/orchestrator"
 )
 
 // ReportRequest es el payload que el LLM emite dentro del marker
@@ -20,8 +22,9 @@ type ReportRequest struct {
 	Tickets     []string `json:"tickets"`
 }
 
-// ReportJob implementa Job. Cada worker corre el skill /evaluar-tarea sobre
-// un ticket de forma 100% autónoma: lee docs, llama Jira, decide.
+// ReportJob implementa orchestrator.Job. Cada worker corre el skill
+// /evaluar-tarea sobre un ticket de forma 100% autónoma: lee docs, llama Jira,
+// decide.
 type ReportJob struct {
 	Key      string
 	Rendered string // /evaluar-tarea renderizado con la KEY como {{input}}
@@ -41,13 +44,13 @@ REGLAS DE FORMATO ESTRICTAS (sobreescriben tu personalidad por completo):
 
 Por lo demás trabajás como siempre: leé el INDEX si te hace falta, consultá Jira, aplicá las reglas internas. La autonomía es total para investigar; el formato del output final es rígido.`
 
-func (j ReportJob) ID() string         { return j.Key }
-func (j ReportJob) System() []string   { return []string{reportStyleOverride} }
-func (j ReportJob) Prompt() string     { return j.Rendered }
+func (j ReportJob) ID() string       { return j.Key }
+func (j ReportJob) System() []string { return []string{reportStyleOverride} }
+func (j ReportJob) Prompt() string   { return j.Rendered }
 
-// runReport ejecuta el reporte: parsea payload, fan-out a workers, escribe .md.
+// RunReport ejecuta el reporte: parsea payload, fan-out a workers, escribe .md.
 // Devuelve path del archivo y un summary corto para mostrarle al usuario.
-func (a *agent) runReport(ctx context.Context, payload string) (artifact, summary string, err error) {
+func (a *Agent) RunReport(ctx context.Context, payload string) (artifact, summary string, err error) {
 	var req ReportRequest
 	if err := json.Unmarshal([]byte(payload), &req); err != nil {
 		return "", "", fmt.Errorf("payload inválido: %w", err)
@@ -63,21 +66,21 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 		truncated = true
 	}
 
-	jobs := make([]Job, len(req.Tickets))
+	jobs := make([]orchestrator.Job, len(req.Tickets))
 	for i, key := range req.Tickets {
-		rendered, ok := a.skills.render("evaluar-tarea", key)
+		rendered, ok := a.skills.Render("evaluar-tarea", key)
 		if !ok {
 			return "", "", fmt.Errorf("skill 'evaluar-tarea' no está cargada; cada worker la necesita")
 		}
 		jobs[i] = ReportJob{Key: key, Rendered: rendered}
 	}
 
-	opts := PoolOptions{
+	opts := orchestrator.PoolOptions{
 		Size:          envInt("ORCH_POOL_SIZE", 5),
 		MaxRetries:    envInt("ORCH_MAX_RETRIES", 2),
 		BackoffBase:   envDuration("ORCH_BACKOFF_BASE", 200*time.Millisecond),
 		PerJobTimeout: envDuration("ORCH_PER_JOB_TIMEOUT", 2*time.Minute),
-		OnProgress: func(done, total int, r Result) {
+		OnProgress: func(done, total int, r orchestrator.Result) {
 			status := "ok"
 			if r.Err != nil {
 				status = fmt.Sprintf("FAIL: %v", r.Err)
@@ -87,14 +90,14 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 	}
 
 	fmt.Printf("[orch] iniciando reporte: %d tickets, pool=%d\n", len(jobs), opts.Size)
-	a.emit("orch_start", "", map[string]any{
+	a.Emit("orch_start", "", map[string]any{
 		"kind":        "report",
 		"descripcion": req.Descripcion,
 		"total":       len(jobs),
 		"pool_size":   opts.Size,
 		"job_ids":     req.Tickets,
 	})
-	results := a.runPool(ctx, jobs, opts)
+	results := a.RunPool(ctx, jobs, opts)
 
 	ok, fail := 0, 0
 	for _, r := range results {
@@ -115,7 +118,7 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 	if truncated {
 		summary += fmt.Sprintf(" (truncado a %d, había más)", maxTickets)
 	}
-	a.emit("orch_done", "", map[string]any{
+	a.Emit("orch_done", "", map[string]any{
 		"kind":        "report",
 		"descripcion": req.Descripcion,
 		"artifact":    path,
@@ -127,7 +130,7 @@ func (a *agent) runReport(ctx context.Context, payload string) (artifact, summar
 }
 
 // writeReport vuelca el reporte a un .md y devuelve el path.
-func writeReport(req ReportRequest, results []Result, truncated bool) (string, error) {
+func writeReport(req ReportRequest, results []orchestrator.Result, truncated bool) (string, error) {
 	dir := os.Getenv("REPORT_OUTPUT_DIR")
 	if dir == "" {
 		dir = "reports"

@@ -1,6 +1,6 @@
 # Binarios
 *.exe
-aqua
+/aqua
 
 # Secretos / entorno
 .env
@@ -15,16 +15,16 @@ aqua
 .claude/settings.local.json
 
 # Skills (locales del usuario)
-skills/
+/skills/
 
 # Historial de sesiones (local)
-sessions/
+/sessions/
 
 # Reportes generados por el orquestador
-reports/
+/reports/
 
 # Tareas programadas (estado local)
-schedules/
+/schedules/
 
 # Memoria persistente local
 memory.md

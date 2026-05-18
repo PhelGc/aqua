@@ -1,4 +1,6 @@
-package main
+// Package web sirve el dashboard HTTP+SSE de aqua y la API mínima que
+// la UI usa para mandar comandos y descargar reportes.
+package web
 
 import (
 	"context"
@@ -12,85 +14,43 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aqua/internal/agent"
+	"aqua/internal/events"
 )
 
-//go:embed web/*
+//go:embed assets/*
 var webFS embed.FS
 
 const (
-	defaultWebAddr   = "127.0.0.1:7777"
-	webEventBuffer   = 128
-	webHistoryMaxLen = 500
+	defaultWebAddr    = "127.0.0.1:7777"
+	webEventBuffer    = 128
+	webHistoryMaxLen  = 500
 	webRequestTimeout = 30 * time.Minute
 )
 
-// fanoutSink implementa EventSink fanout a todos los clientes SSE conectados.
-// Guarda un historial corto para que clientes que se conectan tarde puedan
-// reconstruir el estado actual.
-type fanoutSink struct {
-	mu      sync.Mutex
-	clients map[chan Event]struct{}
-	history []Event
-}
-
-func newFanoutSink() *fanoutSink {
-	return &fanoutSink{clients: make(map[chan Event]struct{})}
-}
-
-func (f *fanoutSink) Publish(evt Event) {
-	f.mu.Lock()
-	f.history = append(f.history, evt)
-	if len(f.history) > webHistoryMaxLen {
-		f.history = f.history[len(f.history)-webHistoryMaxLen:]
-	}
-	for ch := range f.clients {
-		// Non-blocking: si el cliente está lento, dropeamos en vez de bloquear el publisher.
-		select {
-		case ch <- evt:
-		default:
-		}
-	}
-	f.mu.Unlock()
-}
-
-func (f *fanoutSink) subscribe() (<-chan Event, []Event, func()) {
-	ch := make(chan Event, webEventBuffer)
-	f.mu.Lock()
-	f.clients[ch] = struct{}{}
-	histCopy := make([]Event, len(f.history))
-	copy(histCopy, f.history)
-	f.mu.Unlock()
-	cleanup := func() {
-		f.mu.Lock()
-		delete(f.clients, ch)
-		f.mu.Unlock()
-		close(ch)
-	}
-	return ch, histCopy, cleanup
-}
-
 type webServer struct {
-	agent *agent
-	sink  *fanoutSink
+	agent *agent.Agent
+	sink  *events.FanoutSink
 	mu    sync.Mutex
 	busy  bool
 }
 
-// runWeb levanta el dashboard HTTP+SSE y lo conecta al agente como EventSink.
-func runWeb(ctx context.Context, a *agent) error {
+// Run levanta el dashboard HTTP+SSE y lo conecta al agente como events.Sink.
+func Run(ctx context.Context, a *agent.Agent) error {
 	addr := os.Getenv("AQUA_WEB_ADDR")
 	if addr == "" {
 		addr = defaultWebAddr
 	}
 
-	sink := newFanoutSink()
-	a.events = sink
+	sink := events.NewFanout(webEventBuffer, webHistoryMaxLen)
+	a.SetEvents(sink)
 
 	s := &webServer{agent: a, sink: sink}
 
 	mux := http.NewServeMux()
 
-	sub, err := fs.Sub(webFS, "web")
+	sub, err := fs.Sub(webFS, "assets")
 	if err != nil {
 		return fmt.Errorf("preparando assets embebidos: %w", err)
 	}
@@ -105,8 +65,8 @@ func runWeb(ctx context.Context, a *agent) error {
 		Handler: mux,
 	}
 
-	toolN := len(a.mcp.tools())
-	skillN := len(a.skills.list())
+	toolN := len(a.MCP().Tools())
+	skillN := len(a.Skills().List())
 	fmt.Printf("aqua · modo: ui · http://%s · %d tools · %d skills\n", addr, toolN, skillN)
 	fmt.Println("ctrl+c para salir")
 
@@ -140,7 +100,7 @@ func (s *webServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch, history, cleanup := s.sink.subscribe()
+	ch, history, cleanup := s.sink.Subscribe()
 	defer cleanup()
 
 	for _, evt := range history {
@@ -169,7 +129,7 @@ func (s *webServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeSSE(w http.ResponseWriter, evt Event) {
+func writeSSE(w http.ResponseWriter, evt events.Event) {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return
@@ -212,9 +172,8 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		args = strings.TrimSpace(args)
 		switch cmd {
 		case "reset":
-			s.agent.history = nil
-			_ = s.agent.sessions.save(s.agent.sessions.current(), s.agent.history)
-			s.sink.Publish(Event{Type: "chat_system", Time: time.Now(), Payload: map[string]any{"text": "(historial limpio)"}})
+			_ = s.agent.Reset()
+			s.sink.Publish(events.Event{Type: "chat_system", Time: time.Now(), Payload: map[string]any{"text": "(historial limpio)"}})
 			s.mu.Lock()
 			s.busy = false
 			s.mu.Unlock()
@@ -222,13 +181,13 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"ok":true}`))
 			return
 		default:
-			if rendered, ok := s.agent.skills.render(cmd, args); ok {
+			if rendered, ok := s.agent.Skills().Render(cmd, args); ok {
 				input = rendered
 			}
 		}
 	}
 
-	s.sink.Publish(Event{
+	s.sink.Publish(events.Event{
 		Type:    "chat_user",
 		Time:    time.Now(),
 		Payload: map[string]any{"text": req.Text},
@@ -245,9 +204,9 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), webRequestTimeout)
 		defer cancel()
-		reply, artifact, err := s.agent.sendAndDispatch(ctx, &s.agent.history, s.agent.sessions.current(), input)
+		reply, artifact, err := s.agent.SendAndDispatch(ctx, s.agent.HistoryPtr(), s.agent.Sessions().Current(), input)
 		if err != nil {
-			s.sink.Publish(Event{
+			s.sink.Publish(events.Event{
 				Type:    "chat_error",
 				Time:    time.Now(),
 				Payload: map[string]any{"error": err.Error()},
@@ -258,7 +217,7 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		if artifact != "" {
 			payload["artifact"] = artifact
 		}
-		s.sink.Publish(Event{
+		s.sink.Publish(events.Event{
 			Type:    "chat_assistant",
 			Time:    time.Now(),
 			Payload: payload,
@@ -296,7 +255,7 @@ func (s *webServer) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"busy":     busy,
-		"session":  s.agent.sessions.current(),
-		"messages": len(s.agent.history),
+		"session":  s.agent.Sessions().Current(),
+		"messages": len(s.agent.History()),
 	})
 }

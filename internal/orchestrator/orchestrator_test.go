@@ -1,4 +1,4 @@
-package main
+package orchestrator
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func makeJobs(n int) []Job {
 	return jobs
 }
 
-func TestRunPool_PreservesOrder(t *testing.T) {
+func TestRun_PreservesOrder(t *testing.T) {
 	jobs := makeJobs(10)
 	opts := PoolOptions{
 		Size: 4,
@@ -36,7 +36,7 @@ func TestRunPool_PreservesOrder(t *testing.T) {
 			return j.ID() + "-ok", nil
 		},
 	}
-	results := (&agent{}).runPool(context.Background(), jobs, opts)
+	results := Run(context.Background(), jobs, opts)
 	if len(results) != len(jobs) {
 		t.Fatalf("len mismatch: got %d, want %d", len(results), len(jobs))
 	}
@@ -53,7 +53,7 @@ func TestRunPool_PreservesOrder(t *testing.T) {
 	}
 }
 
-func TestRunPool_ActuallyParallelizes(t *testing.T) {
+func TestRun_ActuallyParallelizes(t *testing.T) {
 	const n = 8
 	const perJob = 50 * time.Millisecond
 	opts := PoolOptions{
@@ -64,7 +64,7 @@ func TestRunPool_ActuallyParallelizes(t *testing.T) {
 		},
 	}
 	start := time.Now()
-	results := (&agent{}).runPool(context.Background(), makeJobs(n), opts)
+	results := Run(context.Background(), makeJobs(n), opts)
 	elapsed := time.Since(start)
 	if len(results) != n {
 		t.Fatalf("len: %d", len(results))
@@ -75,7 +75,7 @@ func TestRunPool_ActuallyParallelizes(t *testing.T) {
 	}
 }
 
-func TestRunPool_RespectsPoolSize(t *testing.T) {
+func TestRun_RespectsPoolSize(t *testing.T) {
 	const poolSize = 3
 	const n = 12
 	var inflight int32
@@ -95,7 +95,7 @@ func TestRunPool_RespectsPoolSize(t *testing.T) {
 			return "", nil
 		},
 	}
-	(&agent{}).runPool(context.Background(), makeJobs(n), opts)
+	Run(context.Background(), makeJobs(n), opts)
 	if int(maxSeen) > poolSize {
 		t.Errorf("maxSeen=%d, esperaba <= %d", maxSeen, poolSize)
 	}
@@ -104,7 +104,7 @@ func TestRunPool_RespectsPoolSize(t *testing.T) {
 	}
 }
 
-func TestRunPool_PartialFailuresDoNotAbortBatch(t *testing.T) {
+func TestRun_PartialFailuresDoNotAbortBatch(t *testing.T) {
 	opts := PoolOptions{
 		Size: 3,
 		Execute: func(ctx context.Context, j Job) (string, error) {
@@ -114,7 +114,7 @@ func TestRunPool_PartialFailuresDoNotAbortBatch(t *testing.T) {
 			return "ok", nil
 		},
 	}
-	results := (&agent{}).runPool(context.Background(), makeJobs(8), opts)
+	results := Run(context.Background(), makeJobs(8), opts)
 	failed := 0
 	succeeded := 0
 	for _, r := range results {
@@ -129,7 +129,7 @@ func TestRunPool_PartialFailuresDoNotAbortBatch(t *testing.T) {
 	}
 }
 
-func TestRunPool_RetriesUntilSuccess(t *testing.T) {
+func TestRun_RetriesUntilSuccess(t *testing.T) {
 	var calls sync.Map
 	opts := PoolOptions{
 		Size:        2,
@@ -144,7 +144,7 @@ func TestRunPool_RetriesUntilSuccess(t *testing.T) {
 			return "finally ok", nil
 		},
 	}
-	results := (&agent{}).runPool(context.Background(), makeJobs(2), opts)
+	results := Run(context.Background(), makeJobs(2), opts)
 	for _, r := range results {
 		if r.Err != nil {
 			t.Errorf("%s: expected success, got %v", r.JobID, r.Err)
@@ -158,7 +158,7 @@ func TestRunPool_RetriesUntilSuccess(t *testing.T) {
 	}
 }
 
-func TestRunPool_RetriesExhausted(t *testing.T) {
+func TestRun_RetriesExhausted(t *testing.T) {
 	opts := PoolOptions{
 		Size:        2,
 		MaxRetries:  2,
@@ -167,7 +167,7 @@ func TestRunPool_RetriesExhausted(t *testing.T) {
 			return "", fmt.Errorf("always fails")
 		},
 	}
-	results := (&agent{}).runPool(context.Background(), makeJobs(2), opts)
+	results := Run(context.Background(), makeJobs(2), opts)
 	for _, r := range results {
 		if r.Err == nil {
 			t.Errorf("%s: expected err", r.JobID)
@@ -178,7 +178,7 @@ func TestRunPool_RetriesExhausted(t *testing.T) {
 	}
 }
 
-func TestRunPool_ProgressCallback(t *testing.T) {
+func TestRun_ProgressCallback(t *testing.T) {
 	const n = 5
 	var calls int32
 	var lastDone, lastTotal int32
@@ -196,7 +196,7 @@ func TestRunPool_ProgressCallback(t *testing.T) {
 			return "", nil
 		},
 	}
-	(&agent{}).runPool(context.Background(), makeJobs(n), opts)
+	Run(context.Background(), makeJobs(n), opts)
 	if int(calls) != n {
 		t.Errorf("OnProgress llamado %d veces, esperaba %d", calls, n)
 	}
@@ -205,7 +205,7 @@ func TestRunPool_ProgressCallback(t *testing.T) {
 	}
 }
 
-func TestRunPool_ContextCancellation(t *testing.T) {
+func TestRun_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	opts := PoolOptions{
 		Size:        2,
@@ -223,7 +223,7 @@ func TestRunPool_ContextCancellation(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
 	}()
-	results := (&agent{}).runPool(ctx, makeJobs(20), opts)
+	results := Run(ctx, makeJobs(20), opts)
 	if len(results) != 20 {
 		t.Fatalf("len = %d, want 20", len(results))
 	}
@@ -239,8 +239,8 @@ func TestRunPool_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestRunPool_EmptyJobs(t *testing.T) {
-	results := (&agent{}).runPool(context.Background(), nil, PoolOptions{Size: 5})
+func TestRun_EmptyJobs(t *testing.T) {
+	results := Run(context.Background(), nil, PoolOptions{Size: 5})
 	if results != nil {
 		t.Errorf("esperaba nil para jobs vacíos, got %v", results)
 	}

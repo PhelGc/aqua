@@ -1,4 +1,5 @@
-package main
+// Package notifier publica notificaciones a un canal externo (Discord, hoy via webhook).
+package notifier
 
 import (
 	"bytes"
@@ -14,8 +15,8 @@ import (
 	"time"
 )
 
-// NotifyOpts permite ajustar el envío.
-type NotifyOpts struct {
+// Opts permite ajustar el envío.
+type Opts struct {
 	// Attachment es un path absoluto/relativo a un archivo local a adjuntar
 	// junto al mensaje. Si está vacío, solo se manda el texto.
 	Attachment string
@@ -27,31 +28,31 @@ type NotifyOpts struct {
 // Notifier publica notificaciones a un canal externo (Discord, hoy via webhook).
 // Implementaciones deben ser concurrent-safe.
 type Notifier interface {
-	Notify(ctx context.Context, message string, opts NotifyOpts) error
+	Notify(ctx context.Context, message string, opts Opts) error
 }
 
-// discordWebhookNotifier envía mensajes a un webhook de Discord vía HTTP POST.
+// discordWebhook envía mensajes a un webhook de Discord vía HTTP POST.
 // Soporta texto y attachment de archivo (multipart cuando hay file, JSON
 // cuando es solo texto).
-type discordWebhookNotifier struct {
+type discordWebhook struct {
 	url    string
 	client *http.Client
 }
 
-// newDiscordWebhookNotifier devuelve un notifier si DISCORD_NOTIFY_WEBHOOK
+// NewDiscordWebhook devuelve un notifier si DISCORD_NOTIFY_WEBHOOK
 // está seteada; si no, devuelve nil (sin error: la feature es opcional).
-func newDiscordWebhookNotifier() Notifier {
+func NewDiscordWebhook() Notifier {
 	url := os.Getenv("DISCORD_NOTIFY_WEBHOOK")
 	if url == "" {
 		return nil
 	}
-	return &discordWebhookNotifier{
+	return &discordWebhook{
 		url:    url,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-func (n *discordWebhookNotifier) Notify(ctx context.Context, message string, opts NotifyOpts) error {
+func (n *discordWebhook) Notify(ctx context.Context, message string, opts Opts) error {
 	chunks := splitForWebhook(message)
 	for i, chunk := range chunks {
 		// El attachment va solo en el último chunk para mantener el flujo visual.
@@ -61,9 +62,9 @@ func (n *discordWebhookNotifier) Notify(ctx context.Context, message string, opt
 		}
 		var err error
 		if att != "" {
-			err = n.sendWithFile(ctx, chunk, NotifyOpts{Username: opts.Username, Attachment: att})
+			err = n.sendWithFile(ctx, chunk, Opts{Username: opts.Username, Attachment: att})
 		} else {
-			err = n.sendText(ctx, chunk, NotifyOpts{Username: opts.Username})
+			err = n.sendText(ctx, chunk, Opts{Username: opts.Username})
 		}
 		if err != nil {
 			return err
@@ -72,7 +73,7 @@ func (n *discordWebhookNotifier) Notify(ctx context.Context, message string, opt
 	return nil
 }
 
-func (n *discordWebhookNotifier) sendText(ctx context.Context, message string, opts NotifyOpts) error {
+func (n *discordWebhook) sendText(ctx context.Context, message string, opts Opts) error {
 	payload := map[string]any{"content": message}
 	if opts.Username != "" {
 		payload["username"] = opts.Username
@@ -89,7 +90,7 @@ func (n *discordWebhookNotifier) sendText(ctx context.Context, message string, o
 	return n.do(req)
 }
 
-func (n *discordWebhookNotifier) sendWithFile(ctx context.Context, message string, opts NotifyOpts) error {
+func (n *discordWebhook) sendWithFile(ctx context.Context, message string, opts Opts) error {
 	f, err := os.Open(opts.Attachment)
 	if err != nil {
 		return fmt.Errorf("abriendo attachment %s: %w", opts.Attachment, err)
@@ -128,7 +129,7 @@ func (n *discordWebhookNotifier) sendWithFile(ctx context.Context, message strin
 	return n.do(req)
 }
 
-func (n *discordWebhookNotifier) do(req *http.Request) error {
+func (n *discordWebhook) do(req *http.Request) error {
 	resp, err := n.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("POST webhook: %w", err)

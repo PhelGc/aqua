@@ -1,13 +1,13 @@
-package main
+package marker
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestParseOrchestrate_BasicMatch(t *testing.T) {
+func TestParse_BasicMatch(t *testing.T) {
 	in := `<orchestrate kind="report">{"jql":"a","max":10}</orchestrate>`
-	m, prose, ok := parseOrchestrate(in)
+	m, prose, ok := Parse(in)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -22,9 +22,9 @@ func TestParseOrchestrate_BasicMatch(t *testing.T) {
 	}
 }
 
-func TestParseOrchestrate_MultilinePayload(t *testing.T) {
+func TestParse_MultilinePayload(t *testing.T) {
 	in := "<orchestrate kind=\"report\">\n{\n  \"jql\": \"x\",\n  \"max\": 5\n}\n</orchestrate>"
-	m, _, ok := parseOrchestrate(in)
+	m, _, ok := Parse(in)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -33,9 +33,9 @@ func TestParseOrchestrate_MultilinePayload(t *testing.T) {
 	}
 }
 
-func TestParseOrchestrate_NoMarker(t *testing.T) {
+func TestParse_NoMarker(t *testing.T) {
 	in := "respuesta normal sin marker"
-	_, prose, ok := parseOrchestrate(in)
+	_, prose, ok := Parse(in)
 	if ok {
 		t.Error("expected ok=false")
 	}
@@ -44,11 +44,11 @@ func TestParseOrchestrate_NoMarker(t *testing.T) {
 	}
 }
 
-func TestParseOrchestrate_ProseAroundMarker(t *testing.T) {
+func TestParse_ProseAroundMarker(t *testing.T) {
 	in := `Ya casi.
 <orchestrate kind="report">{"jql":"a"}</orchestrate>
 Listo.`
-	m, prose, ok := parseOrchestrate(in)
+	m, prose, ok := Parse(in)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -63,9 +63,9 @@ Listo.`
 	}
 }
 
-func TestParseOrchestrate_FirstOfMultiple(t *testing.T) {
+func TestParse_FirstOfMultiple(t *testing.T) {
 	in := `<orchestrate kind="report">A</orchestrate><orchestrate kind="classify">B</orchestrate>`
-	m, _, ok := parseOrchestrate(in)
+	m, _, ok := Parse(in)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -77,9 +77,9 @@ func TestParseOrchestrate_FirstOfMultiple(t *testing.T) {
 	}
 }
 
-func TestParseOrchestrate_WhitespaceInTag(t *testing.T) {
+func TestParse_WhitespaceInTag(t *testing.T) {
 	in := `<orchestrate  kind = "report"  >payload</orchestrate>`
-	m, _, ok := parseOrchestrate(in)
+	m, _, ok := Parse(in)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -88,9 +88,9 @@ func TestParseOrchestrate_WhitespaceInTag(t *testing.T) {
 	}
 }
 
-func TestParseOrchestrate_PayloadTrimmed(t *testing.T) {
+func TestParse_PayloadTrimmed(t *testing.T) {
 	in := `<orchestrate kind="report">   {"a":1}   </orchestrate>`
-	m, _, _ := parseOrchestrate(in)
+	m, _, _ := Parse(in)
 	if m.Payload != `{"a":1}` {
 		t.Errorf("Payload = %q, expected trimmed", m.Payload)
 	}

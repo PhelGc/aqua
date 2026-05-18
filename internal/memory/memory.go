@@ -1,4 +1,5 @@
-package main
+// Package memory carga el archivo de memoria persistente del agente.
+package memory
 
 import (
 	"fmt"
@@ -8,14 +9,14 @@ import (
 
 const defaultMemoryPath = "memory.md"
 
-// loadMemory lee el archivo de memoria persistente. Si no existe, devuelve ""
+// Load lee el archivo de memoria persistente. Si no existe, devuelve ""
 // sin error (la memoria es opcional). Path por env OPENCODE_MEMORY_PATH;
 // default: memory.md en el cwd.
 //
-// Se llama en cada turn desde runConversation para que cambios escritos por
+// Se llama en cada turn desde el agente para que cambios escritos por
 // aqua via fs__write_file durante una conversación queden visibles en el
 // siguiente turn.
-func loadMemory() (string, error) {
+func Load() (string, error) {
 	path := os.Getenv("OPENCODE_MEMORY_PATH")
 	if path == "" {
 		path = defaultMemoryPath

@@ -1,4 +1,6 @@
-package main
+// Package discord implementa el bot de aqua sobre discordgo, con DM directo
+// + slash commands. Una sesión por usuario, persistida en sessions/.
+package discord
 
 import (
 	"context"
@@ -10,6 +12,9 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"aqua/internal/agent"
+	"aqua/internal/llm"
 )
 
 const (
@@ -20,16 +25,17 @@ const (
 	discordClearMaxPages  = 100
 )
 
-type discordBot struct {
-	agent      *agent
+type bot struct {
+	agent      *agent.Agent
 	allowedIDs map[string]bool
 
 	convoMu sync.Mutex
-	convos  map[string]*[]message
+	convos  map[string]*[]llm.Message
 	busy    map[string]bool
 }
 
-func runDiscord(ctx context.Context, a *agent) error {
+// Run levanta el bot Discord y bloquea hasta que se cancela el ctx.
+func Run(ctx context.Context, a *agent.Agent) error {
 	token := strings.TrimSpace(os.Getenv("DISCORD_BOT_TOKEN"))
 	if token == "" {
 		return fmt.Errorf("DISCORD_BOT_TOKEN no está definida")
@@ -53,20 +59,20 @@ func runDiscord(ctx context.Context, a *agent) error {
 	}
 	dg.Identify.Intents = discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent
 
-	bot := &discordBot{
+	b := &bot{
 		agent:      a,
 		allowedIDs: allowedIDs,
-		convos:     map[string]*[]message{},
+		convos:     map[string]*[]llm.Message{},
 		busy:       map[string]bool{},
 	}
-	dg.AddHandler(bot.onMessage)
-	dg.AddHandler(bot.onInteraction)
+	dg.AddHandler(b.onMessage)
+	dg.AddHandler(b.onInteraction)
 	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
-		if err := bot.registerCommands(s); err != nil {
+		if err := b.registerCommands(s); err != nil {
 			fmt.Fprintln(os.Stderr, "discord: error registrando comandos:", err)
 			return
 		}
-		fmt.Printf("discord: comandos registrados (%d skills + 3 builtins)\n", len(a.skills.list()))
+		fmt.Printf("discord: comandos registrados (%d skills + 3 builtins)\n", len(a.Skills().List()))
 	})
 
 	if err := dg.Open(); err != nil {
@@ -74,8 +80,8 @@ func runDiscord(ctx context.Context, a *agent) error {
 	}
 	defer dg.Close()
 
-	toolN := len(a.mcp.tools())
-	skillN := len(a.skills.list())
+	toolN := len(a.MCP().Tools())
+	skillN := len(a.Skills().List())
 	fmt.Printf("aqua · modo: discord · usuarios autorizados: %d · %d tools · %d skills\n",
 		len(allowedIDs), toolN, skillN)
 	fmt.Println("ctrl+c para salir")
@@ -84,7 +90,7 @@ func runDiscord(ctx context.Context, a *agent) error {
 	return nil
 }
 
-func (b *discordBot) registerCommands(s *discordgo.Session) error {
+func (b *bot) registerCommands(s *discordgo.Session) error {
 	appID := s.State.User.ID
 	guildID := strings.TrimSpace(os.Getenv("DISCORD_REGISTER_GUILD"))
 	cmds := buildDiscordCommands(b.agent)
@@ -127,7 +133,7 @@ func (b *discordBot) registerCommands(s *discordgo.Session) error {
 	return nil
 }
 
-func buildDiscordCommands(a *agent) []*discordgo.ApplicationCommand {
+func buildDiscordCommands(a *agent.Agent) []*discordgo.ApplicationCommand {
 	allContexts := []discordgo.InteractionContextType{
 		discordgo.InteractionContextGuild,
 		discordgo.InteractionContextBotDM,
@@ -164,16 +170,16 @@ func buildDiscordCommands(a *agent) []*discordgo.ApplicationCommand {
 		},
 	}
 
-	for _, sk := range a.skills.list() {
-		desc := sk.description
+	for _, sk := range a.Skills().List() {
+		desc := sk.Description
 		if desc == "" {
-			desc = "Ejecuta la skill " + sk.name
+			desc = "Ejecuta la skill " + sk.Name
 		}
 		if len(desc) > 100 {
 			desc = desc[:97] + "..."
 		}
 		cmds = append(cmds, &discordgo.ApplicationCommand{
-			Name:             sk.name,
+			Name:             sk.Name,
 			Description:      desc,
 			Contexts:         &allContexts,
 			IntegrationTypes: &integrationTypes,
@@ -191,7 +197,7 @@ func buildDiscordCommands(a *agent) []*discordgo.ApplicationCommand {
 	return cmds
 }
 
-func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (b *bot) onInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
@@ -226,17 +232,17 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 	case "reset":
 		b.convoMu.Lock()
 		sessionName := discordSessionPrefix + userID
-		empty := []message{}
+		empty := []llm.Message{}
 		b.convos[userID] = &empty
 		b.convoMu.Unlock()
-		_ = b.agent.sessions.save(sessionName, empty)
+		_ = b.agent.Sessions().Save(sessionName, empty)
 		respondEphemeral(s, i, "(historial limpio)")
 		return
 	case "clear":
 		b.handleClear(s, i, userID)
 		return
 	case "tools":
-		tools := b.agent.mcp.tools()
+		tools := b.agent.MCP().Tools()
 		if len(tools) == 0 {
 			respondEphemeral(s, i, "(sin tools cargadas)")
 			return
@@ -248,24 +254,24 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 		respondEphemeral(s, i, truncateForDiscord(sb.String()))
 		return
 	case "skills":
-		skills := b.agent.skills.list()
-		if len(skills) == 0 {
+		list := b.agent.Skills().List()
+		if len(list) == 0 {
 			respondEphemeral(s, i, "(sin skills cargadas)")
 			return
 		}
 		var sb strings.Builder
-		for _, sk := range skills {
-			d := sk.description
+		for _, sk := range list {
+			d := sk.Description
 			if d == "" {
 				d = "(sin descripción)"
 			}
-			fmt.Fprintf(&sb, "- **/%s** — %s\n", sk.name, d)
+			fmt.Fprintf(&sb, "- **/%s** — %s\n", sk.Name, d)
 		}
 		respondEphemeral(s, i, truncateForDiscord(sb.String()))
 		return
 	}
 
-	rendered, ok := b.agent.skills.render(name, input)
+	rendered, ok := b.agent.Skills().Render(name, input)
 	if !ok {
 		respondEphemeral(s, i, "Comando desconocido: /"+name)
 		return
@@ -287,7 +293,7 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 	history, found := b.convos[userID]
 	if !found {
 		sessionName := discordSessionPrefix + userID
-		loaded, err := b.agent.sessions.load(sessionName)
+		loaded, err := b.agent.Sessions().Load(sessionName)
 		if err != nil {
 			b.convoMu.Unlock()
 			editInteractionResponse(s, i, "Error cargando sesión: "+err.Error())
@@ -311,7 +317,7 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 
 	fmt.Printf("discord slash: %s /%s %s\n", username, name, truncateForLog(input, 60))
 
-	reply, artifact, err := b.agent.sendAndDispatch(reqCtx, history, sessionName, rendered)
+	reply, artifact, err := b.agent.SendAndDispatch(reqCtx, history, sessionName, rendered)
 	if err != nil {
 		editInteractionResponse(s, i, "Error: "+err.Error())
 		return
@@ -335,7 +341,7 @@ func (b *discordBot) onInteraction(s *discordgo.Session, i *discordgo.Interactio
 	}
 }
 
-func (b *discordBot) handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, userID string) {
+func (b *bot) handleClear(s *discordgo.Session, i *discordgo.InteractionCreate, userID string) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
@@ -347,10 +353,10 @@ func (b *discordBot) handleClear(s *discordgo.Session, i *discordgo.InteractionC
 
 	b.convoMu.Lock()
 	sessionName := discordSessionPrefix + userID
-	empty := []message{}
+	empty := []llm.Message{}
 	b.convos[userID] = &empty
 	b.convoMu.Unlock()
-	_ = b.agent.sessions.save(sessionName, empty)
+	_ = b.agent.Sessions().Save(sessionName, empty)
 
 	deleted := 0
 	scanned := 0
@@ -380,7 +386,6 @@ func (b *discordBot) handleClear(s *discordgo.Session, i *discordgo.InteractionC
 
 	editInteractionResponse(s, i, fmt.Sprintf("Limpieza: %d mensaje(s) del bot borrados (de %d revisados) + historial reseteado", deleted, scanned))
 }
-
 
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -436,7 +441,7 @@ func sendChannelFile(s *discordgo.Session, channelID, path string) error {
 	return err
 }
 
-func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+func (b *bot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author == nil || m.Author.ID == s.State.User.ID || m.Author.Bot {
 		return
 	}
@@ -461,7 +466,7 @@ func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate)
 	history, ok := b.convos[m.Author.ID]
 	if !ok {
 		sessionName := discordSessionPrefix + m.Author.ID
-		loaded, err := b.agent.sessions.load(sessionName)
+		loaded, err := b.agent.Sessions().Load(sessionName)
 		if err != nil {
 			b.convoMu.Unlock()
 			fmt.Fprintln(os.Stderr, "discord: error cargando sesión:", err)
@@ -489,7 +494,7 @@ func (b *discordBot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate)
 	stopTyping := keepTyping(ctx, s, m.ChannelID)
 	defer stopTyping()
 
-	reply, artifact, err := b.agent.sendAndDispatch(ctx, history, sessionName, text)
+	reply, artifact, err := b.agent.SendAndDispatch(ctx, history, sessionName, text)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discord: error en send:", err)
 		_, _ = s.ChannelMessageSend(m.ChannelID, "Error: "+err.Error())

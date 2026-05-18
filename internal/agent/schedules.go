@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -7,24 +7,28 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"aqua/internal/llm"
+	"aqua/internal/notifier"
+	"aqua/internal/scheduler"
 )
 
 // scheduleAction es el payload del marker <orchestrate kind="schedule">.
 // Soporta create/cancel/list. La acción la decide el LLM según lo que pida
 // el usuario en lenguaje natural.
 type scheduleAction struct {
-	Action  string `json:"action"`            // create | cancel | list
-	ID      string `json:"id,omitempty"`      // para cancel
-	Label   string `json:"label,omitempty"`   // descripción humana
-	Command string `json:"command,omitempty"` // texto a ejecutar (puede empezar con /)
+	Action  string `json:"action"`             // create | cancel | list
+	ID      string `json:"id,omitempty"`       // para cancel
+	Label   string `json:"label,omitempty"`    // descripción humana
+	Command string `json:"command,omitempty"`  // texto a ejecutar (puede empezar con /)
 	NextRun string `json:"next_run,omitempty"` // ISO8601 con offset, para one-shot
 	Cron    string `json:"cron,omitempty"`     // expresión cron de 5 campos
 }
 
-// runScheduleAdapter procesa el marker schedule. Devuelve (artifact, summary, err).
+// RunScheduleAdapter procesa el marker schedule. Devuelve (artifact, summary, err).
 // Para esta clase de adapter no hay artifact (no genera archivo); el summary es el
 // feedback humano de qué se programó/canceló.
-func (a *agent) runScheduleAdapter(ctx context.Context, payload string) (artifact, summary string, err error) {
+func (a *Agent) RunScheduleAdapter(payload string) (artifact, summary string, err error) {
 	var act scheduleAction
 	if err := json.Unmarshal([]byte(payload), &act); err != nil {
 		return "", "", fmt.Errorf("payload de schedule inválido: %w", err)
@@ -41,7 +45,7 @@ func (a *agent) runScheduleAdapter(ctx context.Context, payload string) (artifac
 	}
 }
 
-func (a *agent) scheduleCreate(act scheduleAction) (string, string, error) {
+func (a *Agent) scheduleCreate(act scheduleAction) (string, string, error) {
 	if a.scheduler == nil {
 		return "", "", fmt.Errorf("scheduler no inicializado")
 	}
@@ -51,7 +55,7 @@ func (a *agent) scheduleCreate(act scheduleAction) (string, string, error) {
 	if act.NextRun == "" && act.Cron == "" {
 		return "", "", fmt.Errorf("falta trigger: pasá 'next_run' (ISO8601) o 'cron' (5 campos)")
 	}
-	sched := &Schedule{
+	sched := &scheduler.Schedule{
 		Label:   act.Label,
 		Command: act.Command,
 		Cron:    strings.TrimSpace(act.Cron),
@@ -63,7 +67,7 @@ func (a *agent) scheduleCreate(act scheduleAction) (string, string, error) {
 		}
 		sched.NextRun = t
 	}
-	if err := a.scheduler.add(sched); err != nil {
+	if err := a.scheduler.Add(sched); err != nil {
 		return "", "", err
 	}
 	summary := fmt.Sprintf("Programada %s: %q · próximo disparo: %s",
@@ -73,7 +77,7 @@ func (a *agent) scheduleCreate(act scheduleAction) (string, string, error) {
 	if sched.Cron != "" {
 		summary += fmt.Sprintf(" (cron: %s)", sched.Cron)
 	}
-	a.emit("schedule_created", sched.ID, map[string]any{
+	a.Emit("schedule_created", sched.ID, map[string]any{
 		"label":    sched.Label,
 		"command":  sched.Command,
 		"next_run": sched.NextRun.Format(time.RFC3339),
@@ -82,25 +86,25 @@ func (a *agent) scheduleCreate(act scheduleAction) (string, string, error) {
 	return "", summary, nil
 }
 
-func (a *agent) scheduleCancel(act scheduleAction) (string, string, error) {
+func (a *Agent) scheduleCancel(act scheduleAction) (string, string, error) {
 	if a.scheduler == nil {
 		return "", "", fmt.Errorf("scheduler no inicializado")
 	}
 	if act.ID == "" {
 		return "", "", fmt.Errorf("falta el campo id")
 	}
-	if err := a.scheduler.cancel(act.ID); err != nil {
+	if err := a.scheduler.Cancel(act.ID); err != nil {
 		return "", "", err
 	}
-	a.emit("schedule_cancelled", act.ID, nil)
+	a.Emit("schedule_cancelled", act.ID, nil)
 	return "", fmt.Sprintf("Cancelada %s.", act.ID), nil
 }
 
-func (a *agent) scheduleList() (string, string, error) {
+func (a *Agent) scheduleList() (string, string, error) {
 	if a.scheduler == nil {
 		return "", "", fmt.Errorf("scheduler no inicializado")
 	}
-	items := a.scheduler.list()
+	items := a.scheduler.List()
 	if len(items) == 0 {
 		return "", "No hay tareas programadas.", nil
 	}
@@ -125,10 +129,10 @@ func (a *agent) scheduleList() (string, string, error) {
 	return "", strings.TrimRight(sb.String(), "\n"), nil
 }
 
-// runScheduled es el callback que el scheduler invoca cuando una tarea dispara.
+// RunScheduled es el callback que el scheduler invoca cuando una tarea dispara.
 // Crea una sesión nueva por corrida para no contaminar la conversación del usuario.
 // El output queda persistido en sessions/ y los artifacts en reports/.
-func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
+func (a *Agent) RunScheduled(ctx context.Context, sched *scheduler.Schedule) {
 	start := time.Now()
 	sessionName := fmt.Sprintf("sched-%s-%d", strings.TrimPrefix(sched.ID, "sch-"), start.Unix())
 
@@ -140,11 +144,11 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 	if strings.HasPrefix(input, "/") {
 		cmd, args, _ := strings.Cut(input[1:], " ")
 		args = strings.TrimSpace(args)
-		rendered, ok := a.skills.render(cmd, args)
+		rendered, ok := a.skills.Render(cmd, args)
 		if !ok {
 			errMsg := fmt.Sprintf("skill /%s no existe. Editá el schedule para usar una skill cargada.", cmd)
 			fmt.Printf("[sched %s] ERROR: %s\n", sched.ID, errMsg)
-			a.emit("schedule_error", sched.ID, map[string]any{"error": errMsg})
+			a.Emit("schedule_error", sched.ID, map[string]any{"error": errMsg})
 			a.notifySchedule(ctx, sched, fmt.Sprintf("❌ **%s** no corrió: %s",
 				firstNonEmpty(sched.Label, sched.Command), errMsg), "")
 			return
@@ -153,18 +157,18 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 	}
 
 	fmt.Printf("[sched %s] disparando: %q (sesión: %s)\n", sched.ID, sched.Command, sessionName)
-	a.emit("schedule_fired", sched.ID, map[string]any{
+	a.Emit("schedule_fired", sched.ID, map[string]any{
 		"command":      sched.Command,
 		"label":        sched.Label,
 		"session_name": sessionName,
 	})
 
-	history := []message{}
-	reply, artifact, err := a.sendAndDispatch(ctx, &history, sessionName, input)
+	history := []llm.Message{}
+	reply, artifact, err := a.SendAndDispatch(ctx, &history, sessionName, input)
 	elapsed := time.Since(start).Round(time.Second)
 	if err != nil {
 		fmt.Printf("[sched %s] ERROR tras %s: %v\n", sched.ID, elapsed, err)
-		a.emit("schedule_error", sched.ID, map[string]any{
+		a.Emit("schedule_error", sched.ID, map[string]any{
 			"error":   err.Error(),
 			"elapsed": elapsed.String(),
 		})
@@ -172,9 +176,9 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 			firstNonEmpty(sched.Label, sched.Command), elapsed, err.Error()), "")
 		return
 	}
-	a.scheduler.markRun(sched.ID, start)
+	a.scheduler.MarkRun(sched.ID, start)
 	fmt.Printf("[sched %s] ok en %s · sesión: %s · artifact: %q\n", sched.ID, elapsed, sessionName, artifact)
-	a.emit("schedule_done", sched.ID, map[string]any{
+	a.Emit("schedule_done", sched.ID, map[string]any{
 		"session_name": sessionName,
 		"artifact":     artifact,
 		"reply":        truncateForLog(reply, 200),
@@ -195,13 +199,13 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 
 // notifySchedule envía notificación al webhook configurado (no-op si no hay).
 // Errores de notificación se loggean pero no abortan el flujo del scheduler.
-func (a *agent) notifySchedule(ctx context.Context, sched *Schedule, message, attachment string) {
+func (a *Agent) notifySchedule(ctx context.Context, sched *scheduler.Schedule, message, attachment string) {
 	if a.notifier == nil {
 		return
 	}
 	notifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := a.notifier.Notify(notifyCtx, message, NotifyOpts{
+	if err := a.notifier.Notify(notifyCtx, message, notifier.Opts{
 		Attachment: attachment,
 		Username:   "aqua · scheduler",
 	}); err != nil {
@@ -215,7 +219,7 @@ func parseScheduleTime(s string) (time.Time, error) {
 	formats := []string{
 		time.RFC3339,
 		time.RFC3339Nano,
-		"2006-01-02T15:04:05",  // sin offset → asume local
+		"2006-01-02T15:04:05", // sin offset → asume local
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04",
 		"2006-01-02T15:04",
@@ -242,4 +246,13 @@ func firstNonEmpty(s ...string) string {
 		}
 	}
 	return ""
+}
+
+// truncateForLog acorta strings para logs, reemplazando newlines por espacios.
+func truncateForLog(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
