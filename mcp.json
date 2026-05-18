@@ -13,13 +13,9 @@
         "ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"
       }
     },
-    "n8n": {
+    "http": {
       "command": "npx",
-      "args": ["-y", "@illuminaresolutions/n8n-mcp-server"],
-      "env": {
-        "N8N_HOST": "${N8N_HOST}",
-        "N8N_API_KEY": "${N8N_API_KEY}"
-      }
+      "args": ["-y", "@mcp-apps/api-tools-mcp-server"]
     },
     "supabase": {
       "command": "npx",
