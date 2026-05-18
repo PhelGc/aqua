@@ -28,6 +28,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/extrame/xls"
 	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
 )
@@ -141,11 +142,7 @@ func (s *Store) Extract(id string) (string, error) {
 		return fmt.Sprintf("[⚠ imagen %q (%d bytes) — el modelo actual no acepta imágenes, no la voy a poder analizar]",
 			meta.Name, meta.Size), nil
 	case "xls":
-		// Excel binario viejo (pre-2007). excelize no lo soporta y volcar
-		// los bytes como texto resulta en basura. El usuario debe convertir
-		// a .xlsx desde Excel/LibreOffice.
-		return fmt.Sprintf("[⚠ archivo %q (.xls, %d bytes) — formato Excel viejo no soportado. Convertilo a .xlsx desde Excel/LibreOffice y subilo de nuevo]",
-			meta.Name, meta.Size), nil
+		return extractXLS(path, meta.Name)
 	default:
 		// Para extensiones desconocidas, intentamos leerla como texto pero
 		// chequeamos primero que sea UTF-8 válido. Si no lo es, devolvemos
@@ -233,6 +230,56 @@ func extractCSV(path, name string, sep rune) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "### Archivo adjunto: %s (%d filas)\n\n", name, len(rows))
 	writeMarkdownTable(&b, rows)
+	return b.String(), nil
+}
+
+// extractXLS lee Excel binario viejo (.xls, pre-2007). API distinta a
+// excelize: iteramos sheets por índice y filas por número fijo.
+func extractXLS(path, name string) (string, error) {
+	wb, err := xls.Open(path, "utf-8")
+	if err != nil {
+		return "", fmt.Errorf("abriendo xls: %w", err)
+	}
+	numSheets := wb.NumSheets()
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Archivo adjunto: %s (%d hojas, formato .xls viejo)\n\n", name, numSheets)
+	for i := 0; i < numSheets; i++ {
+		sheet := wb.GetSheet(i)
+		if sheet == nil {
+			continue
+		}
+		// MaxRow es el último row con datos (0-indexed). Total filas = MaxRow+1.
+		rowCount := int(sheet.MaxRow) + 1
+		fmt.Fprintf(&b, "#### Hoja: %s (%d filas)\n\n", sheet.Name, rowCount)
+		if rowCount == 0 {
+			b.WriteString("_(vacía)_\n\n")
+			continue
+		}
+		// Acumulamos filas como [][]string para reusar writeMarkdownTable.
+		rows := make([][]string, 0, rowCount)
+		// Calcular ancho máximo recorriendo la primera fila + algunas más.
+		// xls no expone el número de columnas global; usamos lo que tenga
+		// cada row individual.
+		maxCols := 0
+		for r := 0; r < rowCount; r++ {
+			row := sheet.Row(r)
+			if row == nil {
+				rows = append(rows, nil)
+				continue
+			}
+			lastCol := row.LastCol()
+			if lastCol > maxCols {
+				maxCols = lastCol
+			}
+			cells := make([]string, lastCol)
+			for c := 0; c < lastCol; c++ {
+				cells[c] = row.Col(c)
+			}
+			rows = append(rows, cells)
+		}
+		writeMarkdownTable(&b, rows)
+		b.WriteString("\n")
+	}
 	return b.String(), nil
 }
 
