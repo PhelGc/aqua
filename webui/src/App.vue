@@ -4,12 +4,17 @@ import ChatLog from './components/ChatLog.vue'
 import ChatInput from './components/ChatInput.vue'
 import { useChat } from './stores/chat'
 
-const { messages, sending, send, cancel } = useChat()
+const { messages, sending, send, cancel, clear, pushSystem } = useChat()
+
+function onSwitched(name: string, count: number) {
+  clear()
+  pushSystem(`sesión: ${name} · ${count} mensajes en disco`)
+}
 </script>
 
 <template>
   <div class="layout">
-    <Sidebar />
+    <Sidebar @switched="onSwitched" />
     <main class="main">
       <ChatLog :messages="messages" />
       <ChatInput :sending="sending" @submit="send" @cancel="cancel" />

@@ -8,6 +8,19 @@ export interface ApiState {
   messages: number
 }
 
+// ─── Sesiones (GET /api/sessions) ────────────────────────────────────────────
+
+export interface SessionItem {
+  name: string
+  /** Cantidad de mensajes persistidos. -1 si la sesión no se pudo leer. */
+  messages: number
+}
+
+export interface SessionsList {
+  current: string
+  items: SessionItem[]
+}
+
 /** Eventos asincrónicos del runtime que vienen por GET /events.
  *  Estos son del FanoutSink: schedules, jobs del orchestrator, etc.
  *  Los tool-calls del turn actual vienen por /command, no por acá. */

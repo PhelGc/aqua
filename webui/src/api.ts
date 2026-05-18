@@ -8,6 +8,7 @@ import type {
   ApiState,
   CommandEvent,
   RuntimeEvent,
+  SessionsList,
 } from './types'
 
 /** Llamada GET /api/state. */
@@ -15,6 +16,41 @@ export async function fetchState(): Promise<ApiState> {
   const r = await fetch('/api/state')
   if (!r.ok) throw new Error(`/api/state: HTTP ${r.status}`)
   return r.json()
+}
+
+// ─── Sesiones ────────────────────────────────────────────────────────────────
+
+/** GET /api/sessions: lista sesiones + activa. */
+export async function fetchSessions(): Promise<SessionsList> {
+  const r = await fetch('/api/sessions')
+  if (!r.ok) throw new Error(`/api/sessions: HTTP ${r.status}`)
+  return r.json()
+}
+
+/** POST /api/sessions/switch */
+export async function switchSession(name: string): Promise<void> {
+  const r = await fetch('/api/sessions/switch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`))
+}
+
+/** POST /api/sessions/new */
+export async function newSession(name: string): Promise<void> {
+  const r = await fetch('/api/sessions/new', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`))
+}
+
+/** DELETE /api/sessions/<name> */
+export async function deleteSession(name: string): Promise<void> {
+  const r = await fetch(`/api/sessions/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`))
 }
 
 /** Abre el stream de eventos asincrónicos del runtime (schedules, jobs, etc.).

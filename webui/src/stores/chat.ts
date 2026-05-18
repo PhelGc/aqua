@@ -151,6 +151,16 @@ function clear() {
   messages.value = []
 }
 
+/** Inserta un mensaje sistema en la vista (sin tocar el backend). Útil para
+ *  notas contextuales como "sesión cambiada". */
+function pushSystem(text: string) {
+  messages.value.push({
+    id: newId(),
+    role: 'system',
+    content: text,
+  })
+}
+
 export function useChat() {
-  return { messages, sending, send, cancel, clear }
+  return { messages, sending, send, cancel, clear, pushSystem }
 }
