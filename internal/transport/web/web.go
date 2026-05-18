@@ -60,6 +60,10 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	mux.HandleFunc("/command", s.handleCommand)
 	mux.HandleFunc("/reports/", s.handleReport)
 	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/sessions", s.handleSessionsList)         // GET
+	mux.HandleFunc("/api/sessions/new", s.handleSessionsNew)      // POST {name}
+	mux.HandleFunc("/api/sessions/switch", s.handleSessionsSwitch) // POST {name}
+	mux.HandleFunc("/api/sessions/", s.handleSessionsItem)         // DELETE /api/sessions/<name>
 
 	server := &http.Server{
 		Addr:    addr,
@@ -325,6 +329,184 @@ func safeReportPath(baseDir, rel string) (string, bool) {
 		return "", false
 	}
 	return candidate, true
+}
+
+// ─── /api/sessions ───────────────────────────────────────────────────────────
+
+type sessionItem struct {
+	Name     string `json:"name"`
+	Messages int    `json:"messages"`
+}
+
+type sessionsListResponse struct {
+	Current string        `json:"current"`
+	Items   []sessionItem `json:"items"`
+}
+
+// handleSessionsList responde GET con la lista de sesiones persistidas + la
+// activa. Lee cada sesión para contar mensajes; si una falla la incluye con
+// messages=-1 para que la UI muestre "?".
+func (s *webServer) handleSessionsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	mgr := s.agent.Sessions()
+	names, err := mgr.List()
+	if err != nil {
+		http.Error(w, "listando sesiones: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Aseguramos que la actual aparezca aunque todavía no esté persistida.
+	cur := mgr.Current()
+	hasCur := false
+	for _, n := range names {
+		if n == cur {
+			hasCur = true
+			break
+		}
+	}
+	if !hasCur && cur != "" {
+		names = append(names, cur)
+	}
+	items := make([]sessionItem, 0, len(names))
+	for _, n := range names {
+		count := -1
+		if h, lerr := mgr.Load(n); lerr == nil {
+			count = len(h)
+		}
+		items = append(items, sessionItem{Name: n, Messages: count})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sessionsListResponse{Current: cur, Items: items})
+}
+
+type sessionNameReq struct {
+	Name string `json:"name"`
+}
+
+// handleSessionsNew crea una sesión nueva, persiste la actual con su history
+// vigente, y switchea hacia la nueva. El history del agente queda vacío.
+func (s *webServer) handleSessionsNew(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.busyLocked() {
+		http.Error(w, "hay un comando en progreso, esperá a que termine", http.StatusConflict)
+		return
+	}
+	var req sessionNameReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "json inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, "name vacío", http.StatusBadRequest)
+		return
+	}
+	mgr := s.agent.Sessions()
+	// Persistir la actual antes de cambiar.
+	if err := mgr.Save(mgr.Current(), s.agent.History()); err != nil {
+		http.Error(w, "guardando sesión actual: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := mgr.SwitchTo(name); err != nil {
+		http.Error(w, "switch: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.agent.SetHistory(nil)
+	// Guardamos la nueva vacía para que aparezca en List() la próxima.
+	if err := mgr.Save(name, nil); err != nil {
+		http.Error(w, "guardando nueva sesión: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "current": name})
+}
+
+// handleSessionsSwitch cambia a una sesión existente. Persiste la actual y
+// carga el history de la objetivo en el agente.
+func (s *webServer) handleSessionsSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.busyLocked() {
+		http.Error(w, "hay un comando en progreso, esperá a que termine", http.StatusConflict)
+		return
+	}
+	var req sessionNameReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "json inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, "name vacío", http.StatusBadRequest)
+		return
+	}
+	mgr := s.agent.Sessions()
+	if name == mgr.Current() {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"current":"` + name + `"}`))
+		return
+	}
+	if err := mgr.Save(mgr.Current(), s.agent.History()); err != nil {
+		http.Error(w, "guardando sesión actual: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	hist, err := mgr.Load(name)
+	if err != nil {
+		http.Error(w, "cargando "+name+": "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := mgr.SwitchTo(name); err != nil {
+		http.Error(w, "switch: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.agent.SetHistory(hist)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"current":  name,
+		"messages": len(hist),
+	})
+}
+
+// handleSessionsItem maneja DELETE /api/sessions/<name>. Borra el archivo
+// pero no la activa (sessions.Manager ya lo valida). Usamos el path para
+// el nombre, no el body, porque DELETE rara vez tiene body.
+func (s *webServer) handleSessionsItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "DELETE only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.busyLocked() {
+		http.Error(w, "hay un comando en progreso, esperá a que termine", http.StatusConflict)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		http.Error(w, "name requerido en path", http.StatusBadRequest)
+		return
+	}
+	if err := s.agent.Sessions().Delete(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// busyLocked es un chequeo no-bloqueante: true si s.busy está seteado.
+// Lo usamos para devolver 409 sin tomar el lock por mucho tiempo.
+func (s *webServer) busyLocked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy
 }
 
 // handleState devuelve estado actual (rest informativo). No usado por la UI
