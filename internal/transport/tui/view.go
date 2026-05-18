@@ -254,7 +254,9 @@ func renderLine(l chatLine, width int) string {
 	case lineThinkingInProgress:
 		return thinkingStyle.Render("· pensando…")
 	case lineThinkingClosed:
-		return mutedStyle.Render("» thinking: " + l.text)
+		// Wrap respetando el ancho del viewport; el prefix "» thinking: "
+		// queda en la primera línea, continuaciones sin prefix.
+		return mutedStyle.Render(wrap.Render("» thinking: " + l.text))
 	}
 	return l.text
 }

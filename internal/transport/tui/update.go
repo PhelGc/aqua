@@ -133,47 +133,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamDeltaMsg:
 		// reasoning_content se acumula silenciosamente (solo se muestra el
 		// indicador "· pensando"). content se va concatenando a la línea
-		// assistant del turn actual. Mantener el thinking fuera del chatView
-		// evita el problema de orden cuando los deltas vienen intercalados.
+		// assistant del turn actual.
 		if msg.ReasoningContent != "" {
 			m.addThinkingChunk(msg.ReasoningContent)
 		}
 		if msg.Content != "" {
 			m.appendOrExtend(lineAssistant, msg.Content)
 		}
-		// Re-encolamos la espera del próximo delta. Si el canal se cerró
-		// (deltaCh == nil) no reagendamos: el chatReplyMsg viene por su
-		// propio camino.
-		if m.deltaCh != nil {
-			return m, waitForDelta(m.deltaCh)
+		return m, waitForDelta(m.deltaCh)
+
+	case streamDoneMsg:
+		// El canal de deltas terminó de drenarse. Si ya teníamos el reply
+		// pendiente, ahora sí cerramos el turn. Si no, cuando llegue.
+		m.deltaCh = nil
+		if m.pendingReply != nil {
+			rep := *m.pendingReply
+			m.pendingReply = nil
+			return m, m.finalizeReply(rep)
 		}
 		return m, nil
 
 	case chatReplyMsg:
-		m.state = stateNormal
-		m.deltaCh = nil
-		m.cancelReq = nil
-		m.closeThinking()
-		if msg.err != nil {
-			// Cancelación voluntaria: nota más suave que un error rojo.
-			if errors.Is(msg.err, context.Canceled) {
-				m.appendLine(lineSystem, "request cancelado")
-			} else {
-				m.appendLine(lineError, msg.err.Error())
-			}
+		// Si todavía hay deltas pendientes (canal abierto), esperamos a que
+		// drene antes de cerrar. Guardamos el reply y volvemos.
+		if m.deltaCh != nil {
+			rep := msg
+			m.pendingReply = &rep
 			return m, nil
 		}
-		// Si veníamos streameando content, la última línea ya tiene el texto
-		// completo. Solo sobrescribimos cuando hay artifact (no llegó por
-		// stream) o cuando NO hubo stream (fallback de callAPIStream o
-		// endpoints que no devuelven SSE).
-		if msg.artifact != "" {
-			m.appendOrExtend(lineAssistant, "\n(archivo: "+msg.artifact+")")
-		}
-		if !hasAssistantLine(m.chatView) {
-			m.appendLine(lineAssistant, msg.text)
-		}
-		return m, nil
+		return m, m.finalizeReply(msg)
 	}
 
 	// Si está enviando, NO propagamos teclas al input (queda "congelado"
@@ -252,12 +240,41 @@ func (m model) startStreaming(prompt string) (model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelReq = cancel
 	m.state = stateSending
+	m.pendingReply = nil
 	deltaCh, replyCh := startSend(ctx, m, prompt)
 	m.deltaCh = deltaCh
 	return m, tea.Batch(
 		waitForDelta(deltaCh),
 		waitForReply(replyCh),
 	)
+}
+
+// finalizeReply cierra el turn: colapsa el thinking, renderiza errores o
+// pega el artifact, y devuelve el state a normal. Se llama cuando AMBOS
+// canales (deltas y reply) terminaron, así garantizamos que ningún delta
+// tardío aparezca después del assistant final.
+func (m *model) finalizeReply(msg chatReplyMsg) tea.Cmd {
+	m.state = stateNormal
+	m.cancelReq = nil
+	m.closeThinking()
+	if msg.err != nil {
+		if errors.Is(msg.err, context.Canceled) {
+			m.appendLine(lineSystem, "request cancelado")
+		} else {
+			m.appendLine(lineError, msg.err.Error())
+		}
+		return nil
+	}
+	// Si veníamos streameando content, la última línea assistant ya tiene
+	// el texto completo. Solo agregamos el artifact si hay, o creamos la
+	// línea de cero cuando no hubo stream (fallback no-SSE).
+	if msg.artifact != "" {
+		m.appendOrExtend(lineAssistant, "\n(archivo: "+msg.artifact+")")
+	}
+	if !hasAssistantLine(m.chatView) {
+		m.appendLine(lineAssistant, msg.text)
+	}
+	return nil
 }
 
 // layout calcula tamaños de viewport e input según width/height actuales.

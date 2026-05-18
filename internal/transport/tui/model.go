@@ -53,9 +53,15 @@ type model struct {
 	// se muestra colapsado al cerrar el turn. Lo separamos del chatView para
 	// que el orden de deltas content/reasoning no rompa el layout.
 	thinkingBuf strings.Builder
-	width       int
-	height      int
-	state       state
+	// pendingReply guarda el chatReplyMsg cuando llega antes de que termine
+	// de drenarse deltaCh. El cierre del turn ocurre cuando AMBAS cosas
+	// pasaron (reply en mano y canal de deltas vacío). Sin esto, el reply
+	// puede llegar primero y los deltas atrasados aparecen DESPUÉS del
+	// assistant final, rompiendo el layout.
+	pendingReply *chatReplyMsg
+	width        int
+	height       int
+	state        state
 
 	viewport viewport.Model
 	input    textarea.Model
@@ -203,18 +209,11 @@ func hasAssistantLine(lines []chatLine) bool {
 	return false
 }
 
-// collapseSnippet toma el thinking completo y devuelve una primera línea
-// representativa: hasta el primer "\n" o 80 chars, lo que llegue antes.
+// collapseSnippet limpia el thinking acumulado: trimea y colapsa newlines
+// múltiples a una sola línea. No trunca: el reasoning se muestra entero con
+// wrap del viewport.
 func collapseSnippet(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.IndexByte(s, '\n'); idx > 0 {
-		s = s[:idx]
-	}
-	const maxLen = 80
-	if len([]rune(s)) > maxLen {
-		s = string([]rune(s)[:maxLen]) + "…"
-	}
-	return s
+	return strings.TrimSpace(s)
 }
 
 // refreshViewport re-renderiza el chatView en el viewport. Es no-op si el
