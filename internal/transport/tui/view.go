@@ -251,8 +251,8 @@ func renderLine(l chatLine, width int) string {
 		return errorStyle.Render("✗ " + l.text)
 	case lineSystem:
 		return mutedStyle.Render("· " + l.text)
-	case lineThinking:
-		return thinkingStyle.Render("· pensando\n" + wrap.Render(l.text))
+	case lineThinkingInProgress:
+		return thinkingStyle.Render("· pensando…")
 	case lineThinkingClosed:
 		return mutedStyle.Render("» thinking: " + l.text)
 	}

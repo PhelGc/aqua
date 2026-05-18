@@ -23,8 +23,8 @@ const (
 	lineTool
 	lineError
 	lineSystem
-	lineThinking        // reasoning_content del LLM en gris cursiva
-	lineThinkingClosed  // bloque colapsado "» thinking: ..." tras terminar
+	lineThinkingInProgress // indicador "· pensando" mientras llega reasoning
+	lineThinkingClosed     // resumen colapsado "» thinking: ..." tras terminar
 )
 
 type chatLine struct {
@@ -46,12 +46,16 @@ const (
 type model struct {
 	agent     *agent.Agent
 	sink      *events.FanoutSink
-	eventCh   <-chan events.Event // canal del subscriber, set en Init
+	eventCh   <-chan events.Event    // canal del subscriber, set en Init
 	deltaCh   <-chan llm.StreamDelta // deltas del send en vuelo, nil entre sends
-	cancelReq context.CancelFunc  // cancela el request en vuelo (esc/ctrl+x)
-	width     int
-	height    int
-	state     state
+	cancelReq context.CancelFunc     // cancela el request en vuelo (esc/ctrl+x)
+	// thinkingBuf acumula reasoning_content del turn actual sin mostrarlo;
+	// se muestra colapsado al cerrar el turn. Lo separamos del chatView para
+	// que el orden de deltas content/reasoning no rompa el layout.
+	thinkingBuf strings.Builder
+	width       int
+	height      int
+	state       state
 
 	viewport viewport.Model
 	input    textarea.Model
@@ -126,21 +130,60 @@ func (m *model) appendOrExtend(kind lineKind, text string) {
 	m.refreshViewport()
 }
 
-// collapseThinking convierte la última línea lineThinking en lineThinkingClosed
-// con el texto truncado. Se llama al terminar el stream para no dejar el
-// razonamiento expandido para siempre.
-func (m *model) collapseThinking() {
+// addThinkingChunk acumula reasoning_content del turno actual y, si todavía
+// no insertamos el indicador "· pensando" en chatView, lo agregamos ahora.
+// El contenido del thinking nunca se muestra en vivo; solo cuando cierra el
+// turno aparece colapsado.
+func (m *model) addThinkingChunk(chunk string) {
+	if chunk == "" {
+		return
+	}
+	m.thinkingBuf.WriteString(chunk)
+	// Si la última línea no es ya el indicador, lo agregamos. Buscamos hacia
+	// atrás respetando el último user para no confundir turns.
+	hasIndicator := false
 	for i := len(m.chatView) - 1; i >= 0; i-- {
-		if m.chatView[i].kind == lineThinking {
-			m.chatView[i].kind = lineThinkingClosed
-			m.chatView[i].text = collapseSnippet(m.chatView[i].text)
+		if m.chatView[i].kind == lineThinkingInProgress {
+			hasIndicator = true
 			break
 		}
-		// Si ya pasamos por una línea assistant, el thinking ya quedó cerrado
-		// antes (turno anterior); no buscamos más atrás.
-		if m.chatView[i].kind == lineAssistant {
+		if m.chatView[i].kind == lineUser {
 			break
 		}
+	}
+	if !hasIndicator {
+		m.chatView = append(m.chatView, chatLine{kind: lineThinkingInProgress, time: time.Now()})
+		m.refreshViewport()
+	}
+}
+
+// closeThinking corre al final del turn: si hay reasoning acumulado, sustituye
+// el indicador "· pensando" por la línea colapsada "» thinking: <snippet>".
+// Si no hubo reasoning, simplemente borra el indicador si quedó vacío.
+func (m *model) closeThinking() {
+	snippet := collapseSnippet(m.thinkingBuf.String())
+	m.thinkingBuf.Reset()
+
+	// Buscamos el indicador del turn actual, hacia atrás hasta el último user.
+	idx := -1
+	for i := len(m.chatView) - 1; i >= 0; i-- {
+		if m.chatView[i].kind == lineThinkingInProgress {
+			idx = i
+			break
+		}
+		if m.chatView[i].kind == lineUser {
+			break
+		}
+	}
+	if idx == -1 {
+		return // nunca hubo thinking en este turn
+	}
+	if snippet == "" {
+		// reasoning vino vacío: removemos el indicador para no dejar ruido.
+		m.chatView = append(m.chatView[:idx], m.chatView[idx+1:]...)
+	} else {
+		m.chatView[idx].kind = lineThinkingClosed
+		m.chatView[idx].text = snippet
 	}
 	m.refreshViewport()
 }

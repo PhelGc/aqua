@@ -131,11 +131,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, next
 
 	case streamDeltaMsg:
-		// Acumulamos el delta en la última línea del tipo correspondiente.
-		// reasoning_content y content pueden venir intercalados pero los
-		// mantenemos en líneas separadas para que el thinking quede arriba.
+		// reasoning_content se acumula silenciosamente (solo se muestra el
+		// indicador "· pensando"). content se va concatenando a la línea
+		// assistant del turn actual. Mantener el thinking fuera del chatView
+		// evita el problema de orden cuando los deltas vienen intercalados.
 		if msg.ReasoningContent != "" {
-			m.appendOrExtend(lineThinking, msg.ReasoningContent)
+			m.addThinkingChunk(msg.ReasoningContent)
 		}
 		if msg.Content != "" {
 			m.appendOrExtend(lineAssistant, msg.Content)
@@ -152,7 +153,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateNormal
 		m.deltaCh = nil
 		m.cancelReq = nil
-		m.collapseThinking()
+		m.closeThinking()
 		if msg.err != nil {
 			// Cancelación voluntaria: nota más suave que un error rojo.
 			if errors.Is(msg.err, context.Canceled) {
