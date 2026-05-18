@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aqua/internal/events"
@@ -43,6 +44,11 @@ type Agent struct {
 	// el lock cubre el modo terminal/web sobre el agente principal.
 	historyMu sync.Mutex
 	history   []llm.Message
+	// historyLen es el contador atómico de len(history). Lectores
+	// observacionales (banners de status, /api/state) lo consultan sin
+	// tomar historyMu — necesario porque SendMain retiene el lock todo
+	// el tiempo del request y eso trabaría el rendering del TUI.
+	historyLen atomic.Int64
 	http      *http.Client
 	mcp       *mcp.Manager
 	skills    *skills.Registry
@@ -131,6 +137,7 @@ func New(ctx context.Context) (*Agent, error) {
 		scheduler:   sched,
 		notifier:    notifier.NewDiscordWebhook(),
 	}
+	a.historyLen.Store(int64(len(history)))
 	sched.Runner = a.RunScheduled
 	go sched.Start(ctx)
 	return a, nil
@@ -171,14 +178,15 @@ func (a *Agent) SetHistory(h []llm.Message) {
 	a.historyMu.Lock()
 	a.history = h
 	a.historyMu.Unlock()
+	a.historyLen.Store(int64(len(h)))
 }
 
-// HistoryLen devuelve la cantidad de mensajes sin copiar el slice. Útil para
-// /api/state y banners de status.
+// HistoryLen devuelve la cantidad de mensajes sin tomar el historyMu.
+// Lectura atómica, sirve para banners de status y /api/state SIN bloquear
+// aunque haya un SendMain en vuelo. El contador se actualiza después de
+// cada mutación de history.
 func (a *Agent) HistoryLen() int {
-	a.historyMu.Lock()
-	defer a.historyMu.Unlock()
-	return len(a.history)
+	return int(a.historyLen.Load())
 }
 
 // SendMain serializa un Send sobre el historial principal del agente con
@@ -193,7 +201,10 @@ func (a *Agent) SendMain(ctx context.Context, sessionName, input string) (text, 
 // renderizar respuesta y reasoning incrementalmente.
 func (a *Agent) SendMainStreaming(ctx context.Context, sessionName, input string, onDelta DeltaCallback) (text, artifact string, err error) {
 	a.historyMu.Lock()
-	defer a.historyMu.Unlock()
+	defer func() {
+		a.historyLen.Store(int64(len(a.history)))
+		a.historyMu.Unlock()
+	}()
 	return a.SendAndDispatchStreaming(ctx, &a.history, sessionName, input, onDelta)
 }
 
