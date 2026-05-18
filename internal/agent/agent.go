@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"aqua/internal/events"
@@ -37,12 +38,16 @@ type Agent struct {
 	model       string
 	apiKey      string
 	personality string
-	history     []llm.Message
-	http        *http.Client
-	mcp         *mcp.Manager
-	skills      *skills.Registry
-	sessions    *sessions.Manager
-	scheduler   *scheduler.Scheduler
+	// historyMu protege history y serializa SendMain. Discord usa convos por
+	// usuario y scheduler usa history local, así que ninguno toca este campo;
+	// el lock cubre el modo terminal/web sobre el agente principal.
+	historyMu sync.Mutex
+	history   []llm.Message
+	http      *http.Client
+	mcp       *mcp.Manager
+	skills    *skills.Registry
+	sessions  *sessions.Manager
+	scheduler *scheduler.Scheduler
 	// label identifica al agente en los logs de tool-call. Vacío = agente
 	// principal (sale como [tool]); con valor sale como [tool/<label>].
 	label string
@@ -50,8 +55,8 @@ type Agent struct {
 	// nil = sin emisión (chat/discord modes funcionan igual). Workers
 	// heredan el sink del padre en RunIsolated.
 	events events.Sink
-	// notifier despacha notificaciones a un canal externo (Discord webhook).
-	// nil si no está configurado (env DISCORD_NOTIFY_WEBHOOK ausente).
+	// notifier despacha notificaciones a un canal externo (noop si no está
+	// configurado el webhook).
 	notifier notifier.Notifier
 }
 
@@ -150,30 +155,58 @@ func (a *Agent) SetEvents(s events.Sink) {
 	a.events = s
 }
 
-// History devuelve una referencia al historial principal del agente.
-// Los transports lo usan para pasarlo a Send/SendAndDispatch.
+// History devuelve una copia defensiva del historial principal. Pensada para
+// lectores observacionales (UI/log) que no pueden coordinar con SendMain.
+// Los flujos que modifican el historial usan SendMain, no manipulan el slice.
 func (a *Agent) History() []llm.Message {
-	return a.history
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	out := make([]llm.Message, len(a.history))
+	copy(out, a.history)
+	return out
 }
 
 // SetHistory reemplaza el historial completo (lo usa /sessions load).
 func (a *Agent) SetHistory(h []llm.Message) {
+	a.historyMu.Lock()
 	a.history = h
+	a.historyMu.Unlock()
 }
 
-// HistoryPtr devuelve un puntero al slice de historial para que los
-// transports puedan pasarlo a Send/SendAndDispatch (que append-ean en él).
+// HistoryLen devuelve la cantidad de mensajes sin copiar el slice. Útil para
+// /api/state y banners de status.
+func (a *Agent) HistoryLen() int {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return len(a.history)
+}
+
+// SendMain serializa un Send sobre el historial principal del agente con
+// lock interno. Es la API que deben usar transports concurrentes (web).
+// Terminal puede seguir usando SendAndDispatch directamente porque su loop
+// es single-threaded.
+func (a *Agent) SendMain(ctx context.Context, sessionName, input string) (text, artifact string, err error) {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.SendAndDispatch(ctx, &a.history, sessionName, input)
+}
+
+// HistoryPtr devuelve un puntero al slice de historial para callers
+// single-threaded (terminal). Web y otros transports concurrentes deben usar
+// SendMain en su lugar.
 func (a *Agent) HistoryPtr() *[]llm.Message {
 	return &a.history
 }
 
 // Reset limpia el historial y guarda la sesión vacía a disco.
 func (a *Agent) Reset() error {
+	a.historyMu.Lock()
 	a.history = nil
+	a.historyMu.Unlock()
 	if a.sessions == nil {
 		return nil
 	}
-	return a.sessions.Save(a.sessions.Current(), a.history)
+	return a.sessions.Save(a.sessions.Current(), nil)
 }
 
 func (a *Agent) Sessions() *sessions.Manager { return a.sessions }

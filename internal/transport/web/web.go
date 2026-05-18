@@ -204,7 +204,7 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), webRequestTimeout)
 		defer cancel()
-		reply, artifact, err := s.agent.SendAndDispatch(ctx, s.agent.HistoryPtr(), s.agent.Sessions().Current(), input)
+		reply, artifact, err := s.agent.SendMain(ctx, s.agent.Sessions().Current(), input)
 		if err != nil {
 			s.sink.Publish(events.Event{
 				Type:    "chat_error",
@@ -290,6 +290,6 @@ func (s *webServer) handleState(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"busy":     busy,
 		"session":  s.agent.Sessions().Current(),
-		"messages": len(s.agent.History()),
+		"messages": s.agent.HistoryLen(),
 	})
 }
