@@ -20,9 +20,11 @@ const sending = computed(() => currentStream.value !== null)
 
 /** Envía un mensaje del usuario. Crea el bubble del user, abre el stream y
  *  va apurando los deltas hacia el último bubble del assistant. Tools se
- *  insertan como mensajes propios entre user y assistant. */
-function send(text: string) {
-  if (sending.value || !text.trim()) return
+ *  insertan como mensajes propios entre user y assistant.
+ *  attachments: IDs de archivos ya subidos via uploadFiles(). */
+function send(text: string, attachments: string[] = []) {
+  if (sending.value) return
+  if (!text.trim() && attachments.length === 0) return
 
   // Bubble del user lo crea el evento `user` del backend (echo). No lo
   // anticipamos acá para que el orden sea exactamente el del backend.
@@ -123,7 +125,7 @@ function send(text: string) {
         currentStream.value = null
         break
     }
-  })
+  }, attachments)
   currentStream.value = handle
   handle.done.finally(() => {
     if (currentStream.value === handle) currentStream.value = null

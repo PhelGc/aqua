@@ -21,6 +21,17 @@ export interface SessionsList {
   items: SessionItem[]
 }
 
+// ─── Attachments (POST /upload) ──────────────────────────────────────────────
+
+export type AttachmentKind = 'xlsx' | 'csv' | 'tsv' | 'pdf' | 'text' | 'image' | 'unknown'
+
+export interface AttachmentMeta {
+  id: string
+  name: string
+  size: number
+  kind: AttachmentKind
+}
+
 /** Eventos asincrónicos del runtime que vienen por GET /events.
  *  Estos son del FanoutSink: schedules, jobs del orchestrator, etc.
  *  Los tool-calls del turn actual vienen por /command, no por acá. */

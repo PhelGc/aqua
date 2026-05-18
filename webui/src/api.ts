@@ -6,6 +6,7 @@
 
 import type {
   ApiState,
+  AttachmentMeta,
   CommandEvent,
   RuntimeEvent,
   SessionsList,
@@ -53,6 +54,17 @@ export async function deleteSession(name: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`))
 }
 
+// ─── Attachments ─────────────────────────────────────────────────────────────
+
+/** Sube archivos al backend. Devuelve la metadata de cada uno. */
+export async function uploadFiles(files: File[]): Promise<AttachmentMeta[]> {
+  const fd = new FormData()
+  for (const f of files) fd.append('file', f, f.name)
+  const r = await fetch('/upload', { method: 'POST', body: fd })
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`))
+  return r.json()
+}
+
 /** Abre el stream de eventos asincrónicos del runtime (schedules, jobs, etc.).
  *  Devuelve el EventSource para que el caller pueda cerrarlo. */
 export function subscribeRuntime(onEvent: (evt: RuntimeEvent) => void): EventSource {
@@ -76,10 +88,12 @@ export interface CommandStream {
 }
 
 /** Envía un POST /command y entrega cada evento SSE al callback.
+ *  attachments: IDs de uploads previos a prependerar al prompt.
  *  Devuelve un handle con .cancel() para abortar el request. */
 export function sendCommand(
   text: string,
   onEvent: (evt: CommandEvent) => void,
+  attachments: string[] = [],
 ): CommandStream {
   const ac = new AbortController()
   const done = (async () => {
@@ -88,7 +102,7 @@ export function sendCommand(
       resp = await fetch('/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, attachments }),
         signal: ac.signal,
       })
     } catch (err) {
