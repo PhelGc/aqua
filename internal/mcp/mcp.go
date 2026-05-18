@@ -67,7 +67,14 @@ func New(ctx context.Context, cfg *Config) (*Manager, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "aqua", Version: "0.1.0"}, nil)
 
 	for name, spec := range cfg.Servers {
-		cmd := exec.Command(spec.Command, spec.Args...)
+		// Expandimos ${VAR} también en los args, no solo en env, así
+		// servers como supabase que reciben el token como argumento CLI
+		// (--access-token ${SUPABASE_ACCESS_TOKEN}) funcionan.
+		expandedArgs := make([]string, len(spec.Args))
+		for i, a := range spec.Args {
+			expandedArgs[i] = os.ExpandEnv(a)
+		}
+		cmd := exec.Command(spec.Command, expandedArgs...)
 		if len(spec.Env) > 0 {
 			env := os.Environ()
 			for k, v := range spec.Env {

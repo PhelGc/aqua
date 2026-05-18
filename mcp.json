@@ -14,7 +14,7 @@
       }
     },
     "http": {
-      "command": "aqua-http-mcp.exe"
+      "command": "./aqua-http-mcp.exe"
     },
     "supabase": {
       "command": "npx",
