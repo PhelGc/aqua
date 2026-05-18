@@ -6,7 +6,7 @@
 // vive acá; los componentes solo leen el array y emiten input.
 
 import { ref, computed } from 'vue'
-import { sendCommand, type CommandStream } from '../api'
+import { fetchHistory, sendCommand, type CommandStream } from '../api'
 import type { ChatMessage, CommandEvent } from '../types'
 
 const messages = ref<ChatMessage[]>([])
@@ -163,6 +163,24 @@ function pushSystem(text: string) {
   })
 }
 
+/** Reemplaza messages con lo que tenga el backend en el history actual.
+ *  Solo trae user/assistant — tool-calls y reasoning del pasado se pierden
+ *  porque no se persisten en el wire del history. La vista queda "plana"
+ *  pero conserva la conversación al refrescar. */
+async function loadHistory(): Promise<void> {
+  try {
+    const h = await fetchHistory()
+    messages.value = h.messages.map((m) => ({
+      id: newId(),
+      role: m.role,
+      content: m.content,
+    }))
+  } catch (e) {
+    messages.value = []
+    pushSystem('no se pudo cargar el history: ' + (e as Error).message)
+  }
+}
+
 export function useChat() {
-  return { messages, sending, send, cancel, clear, pushSystem }
+  return { messages, sending, send, cancel, clear, pushSystem, loadHistory }
 }

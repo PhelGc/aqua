@@ -67,6 +67,7 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	mux.HandleFunc("/command", s.handleCommand)
 	mux.HandleFunc("/reports/", s.handleReport)
 	mux.HandleFunc("/api/state", s.handleState)
+	mux.HandleFunc("/api/history", s.handleHistory)               // GET
 	mux.HandleFunc("/api/sessions", s.handleSessionsList)         // GET
 	mux.HandleFunc("/api/sessions/new", s.handleSessionsNew)      // POST {name}
 	mux.HandleFunc("/api/sessions/switch", s.handleSessionsSwitch) // POST {name}
@@ -399,6 +400,47 @@ func safeReportPath(baseDir, rel string) (string, bool) {
 		return "", false
 	}
 	return candidate, true
+}
+
+// ─── /api/history ────────────────────────────────────────────────────────────
+
+type historyMessage struct {
+	Role    string `json:"role"`    // "user" | "assistant"
+	Content string `json:"content"`
+}
+
+type historyResponse struct {
+	Session  string           `json:"session"`
+	Messages []historyMessage `json:"messages"`
+}
+
+// handleHistory devuelve los mensajes user/assistant del history actual del
+// agent. Filtra role "tool" y "system" porque son ruido para reconstruir la
+// vista del chat. Tampoco rescatamos reasoning ni tool-calls del pasado (no
+// están en wire del history) — la UI muestra el chat "plano".
+func (s *webServer) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	hist := s.agent.History()
+	out := make([]historyMessage, 0, len(hist))
+	for _, m := range hist {
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		// Mensajes de assistant que solo emitieron tool_calls vienen con
+		// Content vacío. Los saltamos para no mostrar bubbles en blanco.
+		if m.Content == "" {
+			continue
+		}
+		out = append(out, historyMessage{Role: m.Role, Content: m.Content})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(historyResponse{
+		Session:  s.agent.Sessions().Current(),
+		Messages: out,
+	})
 }
 
 // ─── /api/sessions ───────────────────────────────────────────────────────────

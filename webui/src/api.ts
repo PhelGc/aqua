@@ -8,6 +8,7 @@ import type {
   ApiState,
   AttachmentMeta,
   CommandEvent,
+  HistoryResponse,
   RuntimeEvent,
   SessionsList,
 } from './types'
@@ -16,6 +17,14 @@ import type {
 export async function fetchState(): Promise<ApiState> {
   const r = await fetch('/api/state')
   if (!r.ok) throw new Error(`/api/state: HTTP ${r.status}`)
+  return r.json()
+}
+
+/** GET /api/history: mensajes user/assistant del history actual.
+ *  Sirve para reconstruir el chat al recargar la página. */
+export async function fetchHistory(): Promise<HistoryResponse> {
+  const r = await fetch('/api/history')
+  if (!r.ok) throw new Error(`/api/history: HTTP ${r.status}`)
   return r.json()
 }
 

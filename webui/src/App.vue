@@ -1,14 +1,19 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatLog from './components/ChatLog.vue'
 import ChatInput from './components/ChatInput.vue'
 import { useChat } from './stores/chat'
 
-const { messages, sending, send, cancel, clear, pushSystem } = useChat()
+const { messages, sending, send, cancel, loadHistory } = useChat()
 
-function onSwitched(name: string, count: number) {
-  clear()
-  pushSystem(`sesión: ${name} · ${count} mensajes en disco`)
+// Al montar, reconstruimos la conversación desde el backend para que
+// sobreviva al refresh de la página.
+onMounted(loadHistory)
+
+// Al cambiar de sesión, recargamos el history de la nueva.
+async function onSwitched(_name: string, _count: number) {
+  await loadHistory()
 }
 </script>
 

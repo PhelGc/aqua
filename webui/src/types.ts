@@ -21,6 +21,18 @@ export interface SessionsList {
   items: SessionItem[]
 }
 
+// ─── History (GET /api/history) ──────────────────────────────────────────────
+
+export interface HistoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface HistoryResponse {
+  session: string
+  messages: HistoryMessage[]
+}
+
 // ─── Attachments (POST /upload) ──────────────────────────────────────────────
 
 export type AttachmentKind = 'xlsx' | 'csv' | 'tsv' | 'pdf' | 'text' | 'image' | 'unknown'
