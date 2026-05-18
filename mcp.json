@@ -23,7 +23,9 @@
         "-y",
         "@supabase/mcp-server-supabase@latest",
         "--access-token",
-        "${SUPABASE_ACCESS_TOKEN}"
+        "${SUPABASE_ACCESS_TOKEN}",
+        "--read-only",
+        "--features=database"
       ]
     }
   }
