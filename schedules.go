@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -132,13 +133,23 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 	sessionName := fmt.Sprintf("sched-%s-%d", strings.TrimPrefix(sched.ID, "sch-"), start.Unix())
 
 	// Resolvemos slash commands antes (igual que en terminal/UI).
+	// Si el comando es /algo y la skill no existe, abortamos: pasar el string
+	// crudo al LLM hace que evalúe inline en formato libre, que es lo opuesto
+	// de lo que se quiere en un schedule.
 	input := sched.Command
 	if strings.HasPrefix(input, "/") {
 		cmd, args, _ := strings.Cut(input[1:], " ")
 		args = strings.TrimSpace(args)
-		if rendered, ok := a.skills.render(cmd, args); ok {
-			input = rendered
+		rendered, ok := a.skills.render(cmd, args)
+		if !ok {
+			errMsg := fmt.Sprintf("skill /%s no existe. Editá el schedule para usar una skill cargada.", cmd)
+			fmt.Printf("[sched %s] ERROR: %s\n", sched.ID, errMsg)
+			a.emit("schedule_error", sched.ID, map[string]any{"error": errMsg})
+			a.notifySchedule(ctx, sched, fmt.Sprintf("❌ **%s** no corrió: %s",
+				firstNonEmpty(sched.Label, sched.Command), errMsg), "")
+			return
 		}
+		input = rendered
 	}
 
 	fmt.Printf("[sched %s] disparando: %q (sesión: %s)\n", sched.ID, sched.Command, sessionName)
@@ -157,6 +168,8 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 			"error":   err.Error(),
 			"elapsed": elapsed.String(),
 		})
+		a.notifySchedule(ctx, sched, fmt.Sprintf("❌ **%s** falló tras %s\nError: %s",
+			firstNonEmpty(sched.Label, sched.Command), elapsed, err.Error()), "")
 		return
 	}
 	a.scheduler.markRun(sched.ID, start)
@@ -167,6 +180,33 @@ func (a *agent) runScheduled(ctx context.Context, sched *Schedule) {
 		"reply":        truncateForLog(reply, 200),
 		"elapsed":      elapsed.String(),
 	})
+
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "✅ **%s** listo en %s\n", firstNonEmpty(sched.Label, sched.Command), elapsed)
+	fmt.Fprintf(&msg, "Sesión: `%s`\n", sessionName)
+	if artifact != "" {
+		msg.WriteString("Reporte adjunto.")
+	} else {
+		msg.WriteString("\n")
+		msg.WriteString(strings.TrimSpace(reply))
+	}
+	a.notifySchedule(ctx, sched, msg.String(), artifact)
+}
+
+// notifySchedule envía notificación al webhook configurado (no-op si no hay).
+// Errores de notificación se loggean pero no abortan el flujo del scheduler.
+func (a *agent) notifySchedule(ctx context.Context, sched *Schedule, message, attachment string) {
+	if a.notifier == nil {
+		return
+	}
+	notifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := a.notifier.Notify(notifyCtx, message, NotifyOpts{
+		Attachment: attachment,
+		Username:   "aqua · scheduler",
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "[sched %s] warning notificando: %v\n", sched.ID, err)
+	}
 }
 
 // parseScheduleTime acepta ISO8601 con offset y también formatos relajados.

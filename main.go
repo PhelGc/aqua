@@ -88,6 +88,9 @@ type agent struct {
 	// nil = sin emisión (chat/discord modes funcionan igual). Workers
 	// heredan el sink del padre en runIsolated.
 	events EventSink
+	// notifier despacha notificaciones a un canal externo (Discord webhook).
+	// nil si no está configurado (env DISCORD_NOTIFY_WEBHOOK ausente).
+	notifier Notifier
 }
 
 func loadPersonality() (string, error) {
@@ -157,6 +160,7 @@ func newAgent(ctx context.Context) (*agent, error) {
 		skills:      skills,
 		sessions:    sessions,
 		scheduler:   sched,
+		notifier:    newDiscordWebhookNotifier(),
 	}
 	sched.runner = a.runScheduled
 	go sched.start(ctx)

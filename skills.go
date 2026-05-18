@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -97,13 +98,53 @@ func (r *skillRegistry) render(name, args string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if strings.Contains(s.template, inputPlaceholder) {
-		return strings.ReplaceAll(s.template, inputPlaceholder, args), true
+	body := substituteTimeTokens(s.template)
+	body = r.substituteSkillsToken(body)
+	if strings.Contains(body, inputPlaceholder) {
+		return strings.ReplaceAll(body, inputPlaceholder, args), true
 	}
 	if args == "" {
-		return s.template, true
+		return body, true
 	}
-	return s.template + "\n\n" + args, true
+	return body + "\n\n" + args, true
+}
+
+// substituteSkillsToken reemplaza {{skills}} por la lista de skills cargadas.
+// Útil para skills meta como /schedule que necesitan saber qué comandos puede
+// programar.
+func (r *skillRegistry) substituteSkillsToken(template string) string {
+	if !strings.Contains(template, "{{skills}}") {
+		return template
+	}
+	names := make([]string, 0, len(r.skills))
+	for _, s := range r.skills {
+		names = append(names, "/"+s.name)
+	}
+	sort.Strings(names)
+	return strings.ReplaceAll(template, "{{skills}}", strings.Join(names, ", "))
+}
+
+var weekdayEs = map[time.Weekday]string{
+	time.Sunday:    "domingo",
+	time.Monday:    "lunes",
+	time.Tuesday:   "martes",
+	time.Wednesday: "miércoles",
+	time.Thursday:  "jueves",
+	time.Friday:    "viernes",
+	time.Saturday:  "sábado",
+}
+
+// substituteTimeTokens reemplaza placeholders temporales en el template del skill:
+//   {{now}}     → ISO8601 con offset local (ej. 2026-05-17T19:35:42-05:00)
+//   {{today}}   → fecha YYYY-MM-DD
+//   {{weekday}} → día de la semana en español
+// Se resuelven en cada render, así las skills siempre ven la hora actual.
+func substituteTimeTokens(template string) string {
+	now := time.Now()
+	template = strings.ReplaceAll(template, "{{now}}", now.Format(time.RFC3339))
+	template = strings.ReplaceAll(template, "{{today}}", now.Format("2006-01-02"))
+	template = strings.ReplaceAll(template, "{{weekday}}", weekdayEs[now.Weekday()])
+	return template
 }
 
 func (r *skillRegistry) list() []*skill {
