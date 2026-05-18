@@ -25,6 +25,7 @@ export default defineConfig({
       },
       '/api': { target: 'http://127.0.0.1:7777', changeOrigin: true },
       '/reports': { target: 'http://127.0.0.1:7777', changeOrigin: true },
+      '/upload': { target: 'http://127.0.0.1:7777', changeOrigin: true },
     },
   },
 })
