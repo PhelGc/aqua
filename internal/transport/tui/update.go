@@ -104,6 +104,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Enter sin popup → submit normal.
 		if msg.String() == "enter" {
 			if m.state == stateSending {
+				// No bloqueamos el typing pero sí avisamos que está ocupado.
+				// El texto del input queda intacto para que el usuario lo
+				// mande cuando termine el request actual.
+				m.appendLine(lineSystem, "esperá a que termine el request actual (esc cancela)")
 				return m, nil
 			}
 			text := strings.TrimSpace(m.input.Value())
@@ -167,25 +171,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.finalizeReply(msg)
 	}
 
-	// Si está enviando, NO propagamos teclas al input (queda "congelado"
-	// visualmente, pero podríamos mostrar el spinner haciendo tick).
+	// Input SIEMPRE recibe teclas (incluso durante stateSending) para que
+	// el usuario pueda ir escribiendo su próximo mensaje mientras la TUI
+	// renderiza la respuesta del LLM. El spinner del footer también sigue
+	// haciendo tick.
 	if m.state == stateSending {
 		var spCmd tea.Cmd
 		m.spinner, spCmd = m.spinner.Update(msg)
 		cmds = append(cmds, spCmd)
-	} else {
-		prevLines := m.input.LineCount()
-		var inCmd tea.Cmd
-		m.input, inCmd = m.input.Update(msg)
-		cmds = append(cmds, inCmd)
-		// Si la cantidad de líneas cambió, recomputamos layout para que el
-		// input crezca/decrezca y el viewport se ajuste.
-		if m.input.LineCount() != prevLines {
-			m.layout()
-		}
-		// Refresh del popup de slash-commands tras cada tecla.
-		m.completion.refresh(m.input.Value(), m.agent)
 	}
+	prevLines := m.input.LineCount()
+	var inCmd tea.Cmd
+	m.input, inCmd = m.input.Update(msg)
+	cmds = append(cmds, inCmd)
+	if m.input.LineCount() != prevLines {
+		m.layout()
+	}
+	m.completion.refresh(m.input.Value(), m.agent)
 
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
