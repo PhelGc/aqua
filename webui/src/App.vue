@@ -19,7 +19,7 @@ async function onSwitched(_name: string, _count: number) {
 
 <template>
   <div class="layout">
-    <Sidebar @switched="onSwitched" />
+    <Sidebar :busy="sending" @switched="onSwitched" />
     <main class="main">
       <ChatLog :messages="messages" />
       <ChatInput :sending="sending" @submit="send" @cancel="cancel" />

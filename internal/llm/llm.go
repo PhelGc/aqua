@@ -3,8 +3,12 @@
 package llm
 
 type Message struct {
-	Role             string     `json:"role"`
-	Content          string     `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content NO usa omitempty: algunos providers (DeepSeek) requieren el
+	// campo presente aunque sea string vacío, en mensajes de assistant que
+	// solo emiten tool_calls. OpenAI y compatibles aceptan el campo vacío
+	// sin problema, así que es el común denominador seguro.
+	Content          string     `json:"content"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string     `json:"tool_call_id,omitempty"`

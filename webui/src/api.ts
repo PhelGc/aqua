@@ -11,6 +11,7 @@ import type {
   HistoryResponse,
   RuntimeEvent,
   SessionsList,
+  SkillMeta,
 } from './types'
 
 /** Llamada GET /api/state. */
@@ -64,6 +65,22 @@ export async function deleteSession(name: string): Promise<void> {
 }
 
 // ─── Attachments ─────────────────────────────────────────────────────────────
+
+// ─── Skills ──────────────────────────────────────────────────────────────────
+
+/** GET /api/skills: lista de skills disponibles para autocomplete. */
+export async function fetchSkills(): Promise<SkillMeta[]> {
+  const r = await fetch('/api/skills')
+  if (!r.ok) throw new Error(`/api/skills: HTTP ${r.status}`)
+  return r.json()
+}
+
+/** POST /api/skills/reload: recarga el registry de skills desde disco. */
+export async function reloadSkills(): Promise<{ count: number }> {
+  const r = await fetch('/api/skills/reload', { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`))
+  return r.json()
+}
 
 /** Sube archivos al backend. Devuelve la metadata de cada uno. */
 export async function uploadFiles(files: File[]): Promise<AttachmentMeta[]> {

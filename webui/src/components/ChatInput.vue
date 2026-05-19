@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
-import { uploadFiles } from '../api'
-import type { AttachmentMeta } from '../types'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { fetchSkills, uploadFiles } from '../api'
+import type { AttachmentMeta, SkillMeta } from '../types'
 
 const props = defineProps<{
   /** True mientras hay un request en vuelo (deshabilita Enter y upload). */
@@ -20,6 +20,88 @@ const uploading = ref(false)
 const uploadError = ref<string | null>(null)
 const dragOver = ref(false)
 
+// ─── Autocomplete de skills ──────────────────────────────────────────────────
+// Se abre cuando el texto empieza con "/" y el cursor todavía está sobre el
+// nombre del comando (antes del primer espacio). Filtra el catálogo de skills
+// por prefijo del nombre.
+
+const skills = ref<SkillMeta[]>([])
+const skillsLoaded = ref(false)
+const showMenu = ref(false)
+const activeIdx = ref(0)
+
+onMounted(async () => {
+  try {
+    skills.value = await fetchSkills()
+  } catch {
+    // Si falla, no rompemos el input — solo no hay autocomplete.
+    skills.value = []
+  } finally {
+    skillsLoaded.value = true
+  }
+})
+
+/** Parse del input: detecta si el cursor está sobre un slash-command al inicio.
+ *  Devuelve el prefijo (lo que va después del `/` hasta el primer espacio) o
+ *  null si no aplica. */
+function slashPrefix(): string | null {
+  const t = text.value
+  if (!t.startsWith('/')) return null
+  // Si ya hay un espacio, el usuario está escribiendo args — no autocomplete.
+  const sp = t.indexOf(' ')
+  if (sp !== -1) return null
+  return t.slice(1)
+}
+
+const filtered = computed<SkillMeta[]>(() => {
+  const prefix = slashPrefix()
+  if (prefix === null) return []
+  // Normalizamos igual que el backend: lowercase + sin acentos comunes.
+  const norm = normalize(prefix)
+  const list = skills.value.filter((s) => normalize(s.name).startsWith(norm))
+  // Si el prefijo está vacío ("/"), mostramos todas.
+  if (prefix === '') return skills.value.slice(0, 20)
+  return list.slice(0, 20)
+})
+
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[áä]/g, 'a')
+    .replace(/[éë]/g, 'e')
+    .replace(/[íï]/g, 'i')
+    .replace(/[óö]/g, 'o')
+    .replace(/[úü]/g, 'u')
+    .replace(/ñ/g, 'n')
+}
+
+// Watch del texto: abre/cierra el menú y resetea el highlight.
+watch(text, () => {
+  nextTick(autosize)
+  const prefix = slashPrefix()
+  if (prefix !== null && skillsLoaded.value) {
+    showMenu.value = filtered.value.length > 0
+    activeIdx.value = 0
+  } else {
+    showMenu.value = false
+  }
+})
+
+function pickSkill(s: SkillMeta) {
+  // Reemplazamos el slash-command tipeado por "/name " para que el usuario
+  // siga con los args. Si no hay args para esta skill, dejamos solo "/name".
+  text.value = '/' + s.name + ' '
+  showMenu.value = false
+  nextTick(() => {
+    ta.value?.focus()
+    // Cursor al final.
+    const el = ta.value
+    if (el) {
+      el.selectionStart = el.selectionEnd = el.value.length
+    }
+  })
+}
+
 // Autosize: el textarea crece con el contenido hasta un máximo.
 function autosize() {
   const el = ta.value
@@ -28,9 +110,33 @@ function autosize() {
   const maxH = 240
   el.style.height = Math.min(el.scrollHeight, maxH) + 'px'
 }
-watch(text, () => nextTick(autosize))
 
 function onKeydown(e: KeyboardEvent) {
+  // Si el menú está abierto, capturamos las teclas de navegación.
+  if (showMenu.value && filtered.value.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      activeIdx.value = (activeIdx.value + 1) % filtered.value.length
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      activeIdx.value =
+        (activeIdx.value - 1 + filtered.value.length) % filtered.value.length
+      return
+    }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)) {
+      e.preventDefault()
+      pickSkill(filtered.value[activeIdx.value])
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      showMenu.value = false
+      return
+    }
+  }
+
   // Enter envía. Shift+Enter o Ctrl+Enter inserta línea nueva.
   if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault()
@@ -53,6 +159,7 @@ function submit() {
   text.value = ''
   pending.value = []
   uploadError.value = null
+  showMenu.value = false
   nextTick(autosize)
 }
 
@@ -141,6 +248,25 @@ function kindIcon(kind: string): string {
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
+    <!-- Menú de autocomplete de skills, sobre el textarea. -->
+    <div v-if="showMenu && filtered.length > 0" class="skill-menu">
+      <div class="skill-menu-header mono">
+        skills · ↑↓ navegar · ⏎/⇥ elegir · esc cerrar
+      </div>
+      <button
+        v-for="(s, i) in filtered"
+        :key="s.name"
+        type="button"
+        class="skill-item"
+        :class="{ active: i === activeIdx }"
+        @mousedown.prevent="pickSkill(s)"
+        @mouseenter="activeIdx = i"
+      >
+        <span class="skill-name mono">/{{ s.name }}</span>
+        <span class="skill-desc">{{ s.description || '(sin descripción)' }}</span>
+      </button>
+    </div>
+
     <!-- Chips de archivos pendientes encima del textarea. -->
     <div v-if="pending.length > 0 || uploading || uploadError" class="chips">
       <span
@@ -182,9 +308,10 @@ function kindIcon(kind: string): string {
       <textarea
         ref="ta"
         v-model="text"
-        :placeholder="sending ? 'aqua está respondiendo… (esc cancela)' : 'escribí un mensaje o arrastrá archivos…'"
+        :placeholder="sending ? 'aqua está respondiendo… (esc cancela)' : 'escribí un mensaje, / para skills, arrastrá archivos…'"
         rows="1"
         @keydown="onKeydown"
+        @blur="showMenu = false"
       />
       <div class="actions">
         <button
@@ -227,6 +354,62 @@ function kindIcon(kind: string): string {
 }
 .input-wrap.drag-over {
   background: rgba(125, 211, 252, 0.05);
+}
+
+/* Menú flotante por encima del textarea. */
+.skill-menu {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(100% - 8px);
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  padding: 4px;
+}
+.skill-menu-header {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.skill-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+.skill-item:hover,
+.skill-item.active {
+  background: rgba(125, 211, 252, 0.12);
+}
+.skill-name {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+}
+.skill-desc {
+  color: var(--fg-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .chips {

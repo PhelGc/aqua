@@ -175,6 +175,7 @@ async function loadHistory(): Promise<void> {
       id: newId(),
       role: m.role,
       content: m.content,
+      reasoning: m.reasoning || undefined,
     }))
   } catch (e) {
     messages.value = []

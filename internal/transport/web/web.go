@@ -19,9 +19,10 @@ import (
 	"aqua/internal/attachments"
 	"aqua/internal/events"
 	"aqua/internal/llm"
+	"aqua/internal/skills"
 )
 
-//go:embed assets/*
+//go:embed all:assets
 var webFS embed.FS
 
 const (
@@ -72,6 +73,8 @@ func Run(ctx context.Context, a *agent.Agent) error {
 	mux.HandleFunc("/api/sessions/new", s.handleSessionsNew)      // POST {name}
 	mux.HandleFunc("/api/sessions/switch", s.handleSessionsSwitch) // POST {name}
 	mux.HandleFunc("/api/sessions/", s.handleSessionsItem)         // DELETE /api/sessions/<name>
+	mux.HandleFunc("/api/skills", s.handleSkillsList)              // GET
+	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)     // POST
 	mux.HandleFunc("/upload", s.handleUpload)                      // POST multipart
 
 	server := &http.Server{
@@ -254,6 +257,67 @@ func (s *webServer) handleCommand(w http.ResponseWriter, r *http.Request) {
 			send("error", map[string]any{"message": "/" + cmd + " no aplica en la UI web"})
 			send("done", map[string]any{"text": "", "artifact": ""})
 			return
+		case "skills":
+			if args == "reload" {
+				reloaded, err := skills.Load()
+				if err != nil {
+					send("error", map[string]any{"message": "recargando skills: " + err.Error()})
+				} else {
+					s.agent.SetSkills(reloaded)
+					send("system", map[string]any{"text": fmt.Sprintf("(recargadas %d skills)", len(reloaded.List()))})
+				}
+			} else {
+				list := s.agent.Skills().List()
+				if len(list) == 0 {
+					send("system", map[string]any{"text": "(sin skills cargadas)"})
+				} else {
+					var b strings.Builder
+					for _, sk := range list {
+						desc := sk.Description
+						if desc == "" {
+							desc = "(sin descripción)"
+						}
+						fmt.Fprintf(&b, "- /%s: %s\n", sk.Name, desc)
+					}
+					send("system", map[string]any{"text": strings.TrimRight(b.String(), "\n")})
+				}
+			}
+			send("done", map[string]any{"text": "", "artifact": ""})
+			return
+		case "tools":
+			tools := s.agent.MCP().Tools()
+			if len(tools) == 0 {
+				send("system", map[string]any{"text": "(sin tools cargadas)"})
+			} else {
+				var b strings.Builder
+				for _, t := range tools {
+					fmt.Fprintf(&b, "- %s: %s\n", t.Function.Name, t.Function.Description)
+				}
+				send("system", map[string]any{"text": strings.TrimRight(b.String(), "\n")})
+			}
+			send("done", map[string]any{"text": "", "artifact": ""})
+			return
+		case "sessions":
+			mgr := s.agent.Sessions()
+			names, err := mgr.List()
+			if err != nil {
+				send("error", map[string]any{"message": "listando sesiones: " + err.Error()})
+			} else if len(names) == 0 {
+				send("system", map[string]any{"text": fmt.Sprintf("(sin sesiones guardadas; actual: %s)", mgr.Current())})
+			} else {
+				var b strings.Builder
+				cur := mgr.Current()
+				for _, n := range names {
+					marker := "  "
+					if n == cur {
+						marker = "* "
+					}
+					fmt.Fprintf(&b, "%s%s\n", marker, n)
+				}
+				send("system", map[string]any{"text": strings.TrimRight(b.String(), "\n")})
+			}
+			send("done", map[string]any{"text": "", "artifact": ""})
+			return
 		default:
 			rendered, found := s.agent.Skills().Render(cmd, args)
 			if !found {
@@ -418,8 +482,9 @@ func safeReportPath(baseDir, rel string) (string, bool) {
 // ─── /api/history ────────────────────────────────────────────────────────────
 
 type historyMessage struct {
-	Role    string `json:"role"`    // "user" | "assistant"
-	Content string `json:"content"`
+	Role      string `json:"role"`    // "user" | "assistant"
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type historyResponse struct {
@@ -447,7 +512,11 @@ func (s *webServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 		if m.Content == "" {
 			continue
 		}
-		out = append(out, historyMessage{Role: m.Role, Content: m.Content})
+		out = append(out, historyMessage{
+			Role:      m.Role,
+			Content:   m.Content,
+			Reasoning: m.ReasoningContent,
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(historyResponse{
@@ -624,6 +693,49 @@ func (s *webServer) handleSessionsItem(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// ─── /api/skills ─────────────────────────────────────────────────────────────
+
+type skillItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// handleSkillsList devuelve las skills disponibles para el autocomplete del
+// chat input. Ordenadas alfabéticamente.
+func (s *webServer) handleSkillsList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	list := s.agent.Skills().List()
+	out := make([]skillItem, 0, len(list))
+	for _, sk := range list {
+		out = append(out, skillItem{Name: sk.Name, Description: sk.Description})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleSkillsReload re-escanea el directorio de skills y reemplaza el registry
+// del agente. Devuelve la cantidad nueva.
+func (s *webServer) handleSkillsReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	reloaded, err := skills.Load()
+	if err != nil {
+		http.Error(w, "recargando skills: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.agent.SetSkills(reloaded)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":    true,
+		"count": len(reloaded.List()),
+	})
 }
 
 // busyLocked es un chequeo no-bloqueante: true si s.busy está seteado.

@@ -8,6 +8,11 @@ import {
 } from '../api'
 import type { SessionsList } from '../types'
 
+const props = defineProps<{
+  /** True mientras hay un /command en vuelo. Desactiva switch/new/delete
+   *  porque el backend rechaza con 409 cualquier mutación de sesiones. */
+  busy: boolean
+}>()
 const emit = defineEmits<{
   /** Se dispara cuando cambiamos de sesión activa (switch o new).
    *  El padre limpia el chat y muestra un mensaje de contexto. */
@@ -30,6 +35,7 @@ async function reload() {
 }
 
 async function onSwitch(name: string) {
+  if (props.busy) return
   if (!data.value || name === data.value.current || loading.value) return
   loading.value = true
   err.value = null
@@ -46,6 +52,7 @@ async function onSwitch(name: string) {
 }
 
 async function onCreate() {
+  if (props.busy) return
   const name = newName.value.trim()
   if (!name || loading.value) return
   loading.value = true
@@ -64,6 +71,7 @@ async function onCreate() {
 }
 
 async function onDelete(name: string) {
+  if (props.busy) return
   if (loading.value) return
   if (!confirm(`¿Borrar la sesión "${name}"?`)) return
   loading.value = true
@@ -83,10 +91,14 @@ defineExpose({ reload })
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :class="{ busy }">
     <div class="brand">
       <span class="brand-name">aqua</span>
       <span class="brand-tag mono">web</span>
+    </div>
+
+    <div v-if="busy" class="busy-hint mono" title="esperá a que aqua termine la respuesta">
+      aqua está respondiendo…
     </div>
 
     <div class="section-head">
@@ -94,7 +106,8 @@ defineExpose({ reload })
       <button
         type="button"
         class="icon-btn"
-        :title="creating ? 'cancelar' : 'nueva sesión'"
+        :disabled="busy"
+        :title="busy ? 'esperá a que aqua termine' : creating ? 'cancelar' : 'nueva sesión'"
         @click="creating = !creating; newName = ''"
       >{{ creating ? '×' : '+' }}</button>
     </div>
@@ -114,7 +127,8 @@ defineExpose({ reload })
       <div
         v-for="item in data?.items ?? []"
         :key="item.name"
-        :class="['session-item', { active: item.name === data?.current }]"
+        :class="['session-item', { active: item.name === data?.current, disabled: busy }]"
+        :title="busy ? 'esperá a que aqua termine la respuesta' : ''"
         @click="onSwitch(item.name)"
       >
         <span class="session-name mono">{{ item.name }}</span>
@@ -123,7 +137,7 @@ defineExpose({ reload })
           v-if="item.name !== data?.current"
           type="button"
           class="del-btn"
-          :disabled="loading"
+          :disabled="loading || busy"
           title="borrar"
           @click.stop="onDelete(item.name)"
         >×</button>
@@ -190,10 +204,24 @@ defineExpose({ reload })
   padding: 0;
   line-height: 1;
 }
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   background: var(--bg);
   color: var(--accent);
   border-color: var(--accent);
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.busy-hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+  padding: 6px 10px;
+  background: rgba(125, 211, 252, 0.08);
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 4px;
+  text-align: center;
 }
 
 .new-form {
@@ -241,7 +269,7 @@ defineExpose({ reload })
   cursor: pointer;
   position: relative;
 }
-.session-item:hover {
+.session-item:hover:not(.disabled) {
   background: rgba(255, 255, 255, 0.04);
 }
 .session-item.active {
@@ -249,6 +277,11 @@ defineExpose({ reload })
   color: var(--accent);
   cursor: default;
 }
+.session-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.session-item.disabled .del-btn { opacity: 0 !important; }
 .session-name {
   flex: 1;
   overflow: hidden;

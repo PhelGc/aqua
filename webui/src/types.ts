@@ -21,11 +21,21 @@ export interface SessionsList {
   items: SessionItem[]
 }
 
+// ─── Skills (GET /api/skills) ────────────────────────────────────────────────
+
+export interface SkillMeta {
+  name: string
+  description: string
+}
+
 // ─── History (GET /api/history) ──────────────────────────────────────────────
 
 export interface HistoryMessage {
   role: 'user' | 'assistant'
   content: string
+  /** Razonamiento acumulado del turn (solo assistant). Si está, la UI lo
+   *  re-renderiza como bloque colapsable al recargar la página. */
+  reasoning?: string
 }
 
 export interface HistoryResponse {
