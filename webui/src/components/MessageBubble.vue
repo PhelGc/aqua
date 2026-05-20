@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import type { ChatMessage } from '../types'
 
 const props = defineProps<{ message: ChatMessage }>()
@@ -8,6 +10,23 @@ const props = defineProps<{ message: ChatMessage }>()
 // en vivo o consultarlo después, clickeás el summary para expandirlo.
 const reasoningOpen = ref(false)
 const hasReasoning = computed(() => !!props.message.reasoning)
+
+// Render markdown solo para assistant. Para user lo dejamos como texto plano:
+// si alguien escribe "**hola**" en el input no queremos transformárselo, y
+// además evitamos cualquier riesgo de XSS desde input directo.
+//
+// `marked` con breaks=true preserva los \n single como <br>, que es lo que
+// espera la mayoría de la gente del chat. `gfm=true` habilita tablas, listas
+// de tareas y code fences ```. DOMPurify limpia el HTML resultante.
+marked.setOptions({ breaks: true, gfm: true })
+
+const renderedContent = computed(() => {
+  if (props.message.role !== 'assistant') return ''
+  const raw = marked.parse(props.message.content, { async: false }) as string
+  return DOMPurify.sanitize(raw, {
+    ADD_ATTR: ['target'], // permite target="_blank" en links
+  })
+})
 </script>
 
 <template>
@@ -48,7 +67,16 @@ const hasReasoning = computed(() => !!props.message.reasoning)
       <div class="thinking-body mono">{{ message.reasoning }}</div>
     </details>
 
-    <div v-if="message.content" class="content">{{ message.content }}</div>
+    <!-- Assistant: markdown renderizado. User: texto plano (pre-wrap). -->
+    <div
+      v-if="message.content && message.role === 'assistant'"
+      class="content md"
+      v-html="renderedContent"
+    />
+    <div
+      v-else-if="message.content"
+      class="content"
+    >{{ message.content }}</div>
 
     <!-- Attachments del usuario como chips. El contenido extraído fue al
          LLM en el prompt pero NO se muestra en la UI para no inundar el
@@ -149,6 +177,99 @@ export function kindIcon(kind: string): string {
   white-space: pre-wrap;
   font-size: 14px;
   line-height: 1.55;
+}
+
+/* Markdown rendering: el HTML generado por marked viene con sus propios
+ * bloques; sacamos pre-wrap (que rompe tablas/code) y damos espaciado
+ * compacto para no inflar el bubble. */
+.content.md {
+  white-space: normal;
+}
+.content.md > :first-child { margin-top: 0; }
+.content.md > :last-child { margin-bottom: 0; }
+.content.md p {
+  margin: 6px 0;
+}
+.content.md h1,
+.content.md h2,
+.content.md h3,
+.content.md h4 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.content.md h1 { font-size: 18px; }
+.content.md h2 { font-size: 16px; }
+.content.md h3 { font-size: 14px; color: var(--accent); }
+.content.md h4 { font-size: 13px; color: var(--fg-dim); }
+.content.md ul,
+.content.md ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+.content.md li { margin: 2px 0; }
+.content.md li > p { margin: 2px 0; }
+.content.md strong { font-weight: 600; color: var(--fg); }
+.content.md em { font-style: italic; }
+.content.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: rgba(125, 211, 252, 0.4);
+}
+.content.md a:hover { text-decoration-color: var(--accent); }
+.content.md code {
+  font-family: 'SF Mono', Menlo, Monaco, 'Cascadia Code', Consolas, monospace;
+  font-size: 12.5px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.content.md pre {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.content.md pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.content.md blockquote {
+  margin: 6px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-dim);
+}
+.content.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.content.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12.5px;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.content.md th,
+.content.md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.content.md th {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 600;
+}
+.content.md tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .thinking {
